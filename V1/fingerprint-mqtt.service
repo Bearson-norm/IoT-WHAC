@@ -1,0 +1,21 @@
+[Unit]
+Description=Fingerprint MQTT Client
+After=network.target
+Wants=network.target
+
+[Service]
+Type=simple
+User=pi
+Group=pi
+WorkingDirectory=/home/pi/fingerprint-mqtt-client
+ExecStart=/usr/bin/python3 fingerprint_mqtt_client.py
+Restart=always
+RestartSec=10
+StandardOutput=journal
+StandardError=journal
+
+# Environment variables (optional)
+Environment=PYTHONPATH=/home/pi/fingerprint-mqtt-client
+
+[Install]
+WantedBy=multi-user.target
