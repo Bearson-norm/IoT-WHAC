@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Raspberry Pi 4 Fingerprint Sensor AS608 MQTT Client
-Sends fingerprint data to MQTT server at 103.87.67.139
+Final Fingerprint MQTT Client for Raspberry Pi 4
+Uses custom AS608 driver for reliable operation
 """
 
 import time
@@ -9,39 +9,24 @@ import json
 import logging
 from datetime import datetime
 import paho.mqtt.client as mqtt
-import serial
-# Try different import methods for compatibility
-try:
-    from adafruit_fingerprint import AdafruitFingerprint
-    FINGERPRINT_CLASS = AdafruitFingerprint
-except ImportError:
-    try:
-        from adafruit_fingerprint import Fingerprint
-        FINGERPRINT_CLASS = Fingerprint
-    except ImportError:
-        try:
-            import adafruit_fingerprint
-            # Try to find the class dynamically
-            for attr_name in dir(adafruit_fingerprint):
-                attr = getattr(adafruit_fingerprint, attr_name)
-                if (isinstance(attr, type) and 
-                    hasattr(attr, 'begin') and 
-                    hasattr(attr, 'get_image')):
-                    FINGERPRINT_CLASS = attr
-                    break
-            else:
-                raise ImportError("Could not find fingerprint class")
-        except Exception as e:
-            logger.error(f"Failed to import fingerprint class: {e}")
-            raise
-from config import *
+from as608_driver import AS608Driver
+
+# Configuration
+STORE_ID = "Store001"
+MQTT_BROKER = "103.87.67.139"
+MQTT_PORT = 1883
+MQTT_TOPIC = "WHAC/Store001/in"
+FINGERPRINT_PORT = "/dev/ttyUSB0"  # Change to /dev/ttyACM0 if needed
+BAUD_RATE = 57600
+CONFIDENCE_THRESHOLD = 50
+SCAN_INTERVAL = 2
 
 # Setup logging
 logging.basicConfig(
-    level=getattr(logging, LOG_LEVEL),
+    level=logging.INFO,
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler(LOG_FILE),
+        logging.FileHandler('fingerprint_mqtt.log'),
         logging.StreamHandler()
     ]
 )
@@ -58,15 +43,17 @@ class FingerprintMQTTClient:
     def setup_fingerprint_sensor(self):
         """Initialize the AS608 fingerprint sensor"""
         try:
-            # Create serial connection
-            uart = serial.Serial(FINGERPRINT_PORT, baudrate=BAUD_RATE, timeout=1)
-            self.fingerprint = FINGERPRINT_CLASS(uart)
+            self.fingerprint = AS608Driver(FINGERPRINT_PORT, BAUD_RATE)
             
-            if self.fingerprint.begin():
-                logger.info("Fingerprint sensor initialized successfully")
+            if self.fingerprint.connect():
+                logger.info("Fingerprint sensor connected successfully")
+                
+                # Get template count
+                count = self.fingerprint.get_template_count()
+                logger.info(f"Stored templates: {count}")
             else:
-                logger.error("Failed to initialize fingerprint sensor")
-                raise Exception("Fingerprint sensor initialization failed")
+                logger.error("Failed to connect to fingerprint sensor")
+                raise Exception("Fingerprint sensor connection failed")
                 
         except Exception as e:
             logger.error(f"Error setting up fingerprint sensor: {e}")
@@ -81,7 +68,7 @@ class FingerprintMQTTClient:
             self.mqtt_client.on_publish = self.on_mqtt_publish
             
             logger.info(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}")
-            self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
+            self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
             self.mqtt_client.loop_start()
             
         except Exception as e:
@@ -111,31 +98,14 @@ class FingerprintMQTTClient:
         try:
             logger.info("Waiting for fingerprint...")
             
-            # Wait for fingerprint
-            while self.fingerprint.get_image() != FINGERPRINT_CLASS.OK:
-                pass
+            # Get fingerprint and search for match
+            finger_id = self.fingerprint.get_fingerprint(CONFIDENCE_THRESHOLD)
             
-            logger.info("Fingerprint image captured")
-            
-            # Convert image
-            if self.fingerprint.image_2_tz(1) != FINGERPRINT_CLASS.OK:
-                logger.error("Failed to convert image")
-                return None
-            
-            # Search for fingerprint
-            if self.fingerprint.finger_search() != FINGERPRINT_CLASS.OK:
-                logger.warning("Fingerprint not found in database")
-                return None
-            
-            finger_id = self.fingerprint.finger_id
-            confidence = self.fingerprint.confidence
-            
-            logger.info(f"Fingerprint found! ID: {finger_id}, Confidence: {confidence}")
-            
-            if confidence >= CONFIDENCE_THRESHOLD:
+            if finger_id is not None:
+                logger.info(f"Fingerprint match found: ID={finger_id}, Confidence={self.fingerprint.confidence}")
                 return finger_id
             else:
-                logger.warning(f"Low confidence match: {confidence}")
+                logger.info("No fingerprint match found")
                 return None
                 
         except Exception as e:
@@ -158,7 +128,7 @@ class FingerprintMQTTClient:
             logger.info(f"Sending data: {message}")
             
             # Publish to MQTT
-            result = self.mqtt_client.publish(MQTT_TOPIC, message, qos=MQTT_QOS)
+            result = self.mqtt_client.publish(MQTT_TOPIC, message, qos=1)
             
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
                 logger.info("Data sent successfully to MQTT server")
@@ -209,10 +179,8 @@ class FingerprintMQTTClient:
                 logger.info("MQTT client disconnected")
             
             if self.fingerprint:
-                # Close serial connection
-                if hasattr(self.fingerprint, '_uart'):
-                    self.fingerprint._uart.close()
-                logger.info("Fingerprint sensor connection closed")
+                self.fingerprint.disconnect()
+                logger.info("Fingerprint sensor disconnected")
                 
         except Exception as e:
             logger.error(f"Error during cleanup: {e}")
