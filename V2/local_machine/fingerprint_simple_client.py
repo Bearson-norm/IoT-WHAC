@@ -62,6 +62,7 @@ class SimpleFingerprintClient:
         """Setup GPIO for relay control"""
         try:
             import RPi.GPIO as GPIO
+            GPIO.setwarnings(False)  # Disable GPIO warnings
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.relay_pin, GPIO.OUT)
             GPIO.output(self.relay_pin, GPIO.LOW)  # Start with relay OFF
@@ -98,6 +99,9 @@ class SimpleFingerprintClient:
     def auto_detect_fingerprint_port(self):
         """Auto-detect AS608 fingerprint sensor port"""
         logger.info("🔍 Auto-detecting fingerprint sensor port...")
+        
+        # Import serial at the beginning of the function
+        import serial
         
         # First, let's see what ports are actually available
         if os.name == 'posix':  # Linux/Unix (Raspberry Pi)
