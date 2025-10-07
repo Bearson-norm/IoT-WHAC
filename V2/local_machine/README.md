@@ -12,11 +12,34 @@ This folder contains all the files that run on your **Raspberry Pi 4** with the 
 - ✅ **MQTT command handling** (add/import/export users)
 - ✅ **Template transfer support**
 - ✅ **Thread-safe command interruption**
+- ✅ **Auto-detect sensor port** (no manual configuration needed)
+- ✅ **Relay control integration**
 
 **Usage:**
 ```bash
 python3 fingerprint_simple_client.py
 ```
+
+## 🔍 Auto-Detection Features
+
+### **Automatic Port Detection:**
+- ✅ **Scans all available ports** automatically
+- ✅ **Tests each port** for AS608 fingerprint sensor
+- ✅ **No manual configuration** required
+- ✅ **Cross-platform support** (Linux, Windows, macOS)
+- ✅ **Fallback to config** if auto-detection fails
+
+### **Supported Ports:**
+- **Linux/Unix**: `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/ttyS*`
+- **Windows**: `COM1-COM8` and detected USB serial ports
+- **macOS**: `/dev/tty.usbserial*`, `/dev/tty.usbmodem*`
+
+### **Detection Process:**
+1. **Scans system** for available serial ports
+2. **Tests each port** with AS608 communication
+3. **Validates sensor** by reading templates
+4. **Uses first valid** AS608 sensor found
+5. **Falls back** to configured port if needed
 
 ## 📁 Other Programs
 

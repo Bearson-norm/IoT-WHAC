@@ -15,6 +15,8 @@ import logging
 import sys
 import sqlite3
 import threading
+import glob
+import os
 from datetime import datetime
 from config import *
 from postgresql_integration import PostgreSQLIntegration
@@ -49,6 +51,9 @@ class SimpleFingerprintClient:
         # Relay controller
         self.relay_controller = RelayController()
         
+        # Auto-detect fingerprint sensor port
+        self.detected_port = self.auto_detect_fingerprint_port()
+        
         # MQTT Topics
         self.SCAN_TOPIC = MQTT_TOPIC  # "WHAC/Store001/in" - for scan results
         self.ADD_USER_TOPIC = "WHAC/Store001/add_user"  # for adding users
@@ -56,13 +61,71 @@ class SimpleFingerprintClient:
         self.EXPORT_TOPIC = "WHAC/Store001/export"  # for exporting users
         self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
         self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
+    
+    def auto_detect_fingerprint_port(self):
+        """Auto-detect AS608 fingerprint sensor port"""
+        logger.info("🔍 Auto-detecting fingerprint sensor port...")
         
+        # Common ports for AS608 fingerprint sensors
+        possible_ports = [
+            "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyUSB2", "/dev/ttyUSB3",
+            "/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3",
+            "/dev/ttyS0", "/dev/ttyS1", "/dev/ttyS2", "/dev/ttyS3",
+            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"
+        ]
+        
+        # Try to find USB serial devices
+        if os.name == 'posix':  # Linux/Unix
+            usb_ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
+            possible_ports = usb_ports + possible_ports
+        elif os.name == 'nt':  # Windows
+            # On Windows, try to detect COM ports
+            import serial.tools.list_ports
+            available_ports = [port.device for port in serial.tools.list_ports.comports()]
+            possible_ports = available_ports + possible_ports
+        
+        logger.info(f"Checking {len(possible_ports)} possible ports...")
+        
+        for port in possible_ports:
+            if not os.path.exists(port):
+                continue
+                
+            try:
+                logger.info(f"Testing port: {port}")
+                
+                # Try to connect to the port
+                test_uart = serial.Serial(port, baudrate=BAUD_RATE, timeout=1)
+                time.sleep(0.5)
+                
+                # Try to create fingerprint object
+                test_finger = adafruit_fingerprint.Adafruit_Fingerprint(test_uart)
+                
+                # Try to read templates (this will fail if not an AS608)
+                result = test_finger.read_templates()
+                
+                if result == adafruit_fingerprint.OK:
+                    logger.info(f"✓ AS608 fingerprint sensor found on {port}!")
+                    logger.info(f"  Templates: {test_finger.template_count}")
+                    test_uart.close()
+                    return port
+                else:
+                    logger.debug(f"  Not an AS608 sensor on {port}")
+                    test_uart.close()
+                    
+            except Exception as e:
+                logger.debug(f"  Port {port} failed: {e}")
+                continue
+        
+        # If auto-detection fails, use the configured port
+        logger.warning(f"⚠️  Auto-detection failed, using configured port: {FINGERPRINT_PORT}")
+        return FINGERPRINT_PORT
+    
     def connect_sensor(self, retries=3):
         """Connect to AS608 fingerprint sensor"""
         for attempt in range(retries):
             try:
-                logger.info(f"Connecting to fingerprint sensor on {FINGERPRINT_PORT} (attempt {attempt + 1})")
-                self.uart = serial.Serial(FINGERPRINT_PORT, baudrate=BAUD_RATE, timeout=2)
+                logger.info(f"Connecting to fingerprint sensor on {self.detected_port} (attempt {attempt + 1})")
+                self.uart = serial.Serial(self.detected_port, baudrate=BAUD_RATE, timeout=2)
                 time.sleep(0.5)
                 self.finger = adafruit_fingerprint.Adafruit_Fingerprint(self.uart)
                 
@@ -638,10 +701,12 @@ def main():
         logger.info("=" * 70)
         logger.info(f"Store ID: {STORE_ID}")
         logger.info(f"MQTT Broker: {MQTT_BROKER}:{MQTT_PORT}")
+        logger.info(f"Fingerprint Port: {client.detected_port} (auto-detected)")
         logger.info(f"Scan Topic: {client.SCAN_TOPIC}")
         logger.info(f"Add User Topic: {client.ADD_USER_TOPIC}")
         logger.info(f"Import Topic: {client.IMPORT_TOPIC}")
         logger.info(f"Export Topic: {client.EXPORT_TOPIC}")
+        logger.info(f"Action Topic: {client.ACTION_TOPIC}")
         logger.info(f"Stored Templates: {template_count}")
         logger.info(f"Confidence Threshold: {CONFIDENCE_THRESHOLD}")
         logger.info("=" * 70)
