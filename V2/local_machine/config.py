@@ -14,7 +14,7 @@ MQTT_KEEPALIVE = 60
 MQTT_QOS = 1
 
 # Fingerprint Sensor Configuration
-FINGERPRINT_PORT = "/dev/ttyUSB0"  # Change to /dev/ttyACM0 if needed
+FINGERPRINT_PORT = "/dev/serial0"  # Raspberry Pi UART - change to /dev/ttyUSB0 for USB adapter
 BAUD_RATE = 57600
 CONFIDENCE_THRESHOLD = 50  # Minimum confidence for fingerprint match
 

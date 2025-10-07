@@ -30,9 +30,14 @@ python3 fingerprint_simple_client.py
 - ✅ **Fallback to config** if auto-detection fails
 
 ### **Supported Ports:**
-- **Linux/Unix**: `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/ttyS*`
+- **Linux/Unix**: `/dev/ttyUSB*`, `/dev/ttyACM*`, `/dev/ttyS*`, `/dev/serial0`, `/dev/serial1`
 - **Windows**: `COM1-COM8` and detected USB serial ports
 - **macOS**: `/dev/tty.usbserial*`, `/dev/tty.usbmodem*`
+
+### **Common AS608 Connections:**
+- **GPIO UART**: `/dev/serial0` (Raspberry Pi built-in UART)
+- **USB Adapter**: `/dev/ttyUSB0` (USB-to-serial adapter)
+- **USB Device**: `/dev/ttyACM0` (Direct USB connection)
 
 ### **Detection Process:**
 1. **Scans system** for available serial ports

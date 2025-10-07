@@ -113,12 +113,18 @@ class SimpleFingerprintClient:
                     logger.info(f"  Found USB ports: {found_ports}")
             
             # Check built-in serial ports
-            builtin_patterns = ['/dev/ttyS*', '/dev/ttyAMA*']
+            builtin_patterns = ['/dev/ttyS*', '/dev/ttyAMA*', '/dev/serial0', '/dev/serial1']
             for pattern in builtin_patterns:
-                found_ports = glob.glob(pattern)
-                all_ports.extend(found_ports)
-                if found_ports:
-                    logger.info(f"  Found built-in ports: {found_ports}")
+                if pattern.startswith('/dev/serial'):
+                    # Add specific serial ports
+                    if os.path.exists(pattern):
+                        all_ports.append(pattern)
+                        logger.info(f"  Found serial port: {pattern}")
+                else:
+                    found_ports = glob.glob(pattern)
+                    all_ports.extend(found_ports)
+                    if found_ports:
+                        logger.info(f"  Found built-in ports: {found_ports}")
             
             # Remove duplicates and sort
             possible_ports = sorted(list(set(all_ports)))
@@ -202,6 +208,12 @@ class SimpleFingerprintClient:
                 ports = glob.glob(pattern)
                 if ports:
                     logger.info(f"  {pattern}: {ports}")
+            
+            # Check specific serial ports
+            serial_ports = ['/dev/serial0', '/dev/serial1']
+            for port in serial_ports:
+                if os.path.exists(port):
+                    logger.info(f"  Serial port: {port}")
         elif os.name == 'nt':  # Windows
             try:
                 import serial.tools.list_ports
