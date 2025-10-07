@@ -57,6 +57,9 @@
                         <li><a class="dropdown-item" href="{{ url_for('change_password') }}">
                             <i class="fas fa-key me-2"></i>Change Password
                         </a></li>
+                        <li><a class="dropdown-item" href="{{ url_for('admin_dashboard') }}" id="adminLink" style="display: none;">
+                            <i class="fas fa-cog me-2"></i>Admin Panel
+                        </a></li>
                         <li><hr class="dropdown-divider"></li>
                         <li><a class="dropdown-item" href="{{ url_for('logout') }}">
                             <i class="fas fa-sign-out-alt me-2"></i>Logout
@@ -374,7 +377,14 @@
         function updateUserInfo() {
             // This would typically come from the server, but for now we'll use session data
             const username = '{{ session.username if session.username else "Admin" }}';
+            const userRole = '{{ session.role if session.role else "admin" }}';
+            
             document.getElementById('currentUsername').textContent = username;
+            
+            // Show admin link for admin users
+            if (userRole === 'admin') {
+                document.getElementById('adminLink').style.display = 'block';
+            }
         }
 
         // Initialize WebSocket connection

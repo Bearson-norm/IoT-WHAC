@@ -1,169 +1,140 @@
-# Server Files
+# Server Components
 
-This folder contains all the files that run on your **server** for centralized fingerprint template management.
+This folder contains server-side components for the WHAC Fingerprint System.
 
-## 🎯 Main Program
+## 🎯 Main Components
 
-### **`server_template_manager.py`** ⭐
-**This is the main server program!**
+### **`mqtt_data_processor.py`** ⭐
+**This is the main server component that bridges local machines and web UI!**
 
-- ✅ **Central template database** management
-- ✅ **Automatic ID reassignment** when transferring between sensors
-- ✅ **MQTT communication** with all sensors
-- ✅ **User transfer** between different stores/sensors
-- ✅ **Template storage** and retrieval
+- ✅ **Receives fingerprint scan data** from local machines via MQTT
+- ✅ **Processes and logs data** to PostgreSQL database
+- ✅ **Real-time data processing** for web UI
+- ✅ **User information lookup** and validation
+- ✅ **Status updates** via MQTT
 
 **Usage:**
 ```bash
-python3 server_template_manager.py
+python3 mqtt_data_processor.py
 ```
 
-## 📁 Documentation
+### **`server_template_manager.py`**
+- Central template management system
+- User ID reassignment between sensors
+- Template transfer coordination
+- Multi-sensor management
 
-### **`SERVER_MANAGEMENT_GUIDE.md`**
-Complete guide for server-side management:
-- Database schema
-- MQTT topics
-- Usage examples
-- Transfer workflows
+### **`central_fingerprints.db`**
+- SQLite database for template management
+- User profile storage
+- Template metadata
 
-### **`TEMPLATE_TRANSFER.md`**
-Technical documentation for template transfer:
-- Data types comparison
-- Template format details
-- Security considerations
-
-## 🏗️ System Architecture
+## 🔄 Data Flow
 
 ```
-┌─────────────┐    Export    ┌─────────────┐    Import    ┌─────────────┐
-│  Sensor A   │ ──────────→  │   Server    │ ──────────→  │  Sensor B   │
-│ User Joe    │              │  Database   │              │ User Joe    │
-│ ID: 1       │              │ Templates   │              │ ID: 2       │
-└─────────────┘              └─────────────┘              └─────────────┘
+Local Machine → MQTT → Server → PostgreSQL → Web UI
 ```
 
-## 🎯 Your Use Case - Perfectly Handled!
+1. **Local Machine** scans fingerprint and sends to MQTT
+2. **Server** receives data via `mqtt_data_processor.py`
+3. **Server** processes and logs to PostgreSQL
+4. **Web UI** displays data and sends real-time notifications
 
-**Scenario:**
-```
-Sensor A: User Joe (ID 1) → Export → Server → Import to Sensor B (ID 2)
-```
+## 📊 MQTT Topics
 
-**What happens:**
-1. ✅ **Sensor A** detects User Joe with ID 1
-2. ✅ **Exports** Joe's template to server
-3. ✅ **Server** stores template in central database
-4. ✅ **Server** sends template to Sensor B with **new ID 2**
-5. ✅ **User Joe** can now use Sensor B with ID 2
+### **Incoming (from Local Machine):**
+- **`WHAC/Store001/in`** - Fingerprint scan data
 
-## 📊 Database Schema
+### **Outgoing (to Local Machine):**
+- **`WHAC/Store001/action`** - Relay control commands
+- **`WHAC/Store001/status`** - Status updates
 
-### Central Users Table
-```sql
-users (
-    user_id TEXT PRIMARY KEY,           -- "Store001_1_Joe"
-    user_name TEXT NOT NULL,            -- "Joe"
-    template_data BLOB NOT NULL,        -- Binary template
-    created_at TIMESTAMP,
-    last_updated TIMESTAMP,
-    is_active BOOLEAN
-)
-```
+## 🗄️ Database Integration
 
-### Sensor Assignments Table
-```sql
-sensor_assignments (
-    user_id TEXT,                       -- Reference to users
-    store_id TEXT,                      -- "Store001", "Store002"
-    sensor_fingerprint_id INTEGER,      -- ID on that sensor
-    assigned_at TIMESTAMP,
-    is_active BOOLEAN
-)
-```
+### **PostgreSQL Tables:**
+- **`log_data`** - Raw scan data
+- **`log_action`** - Action logs with user info
+- **`store_001`** - User profiles and template mapping
 
-## 📡 MQTT Topics
+### **Data Processing:**
+- **User lookup** by fingerprint ID
+- **Action logging** with timestamps
+- **Status tracking** and updates
+- **Real-time notifications** to web UI
 
-### Server Listens To:
-- **`WHAC/+/export`** - Export from any sensor
-- **`WHAC/+/add_user`** - Add user from any sensor
-- **`WHAC/server/command`** - Server management commands
+## ⚙️ Configuration
 
-### Server Sends To:
-- **`WHAC/Store001/import`** - Import to specific sensor
-- **`WHAC/Store002/import`** - Import to different sensor
-- **`WHAC/server/response`** - Server responses
+### **MQTT Settings:**
+- **Broker**: `103.87.67.139:1883`
+- **Topics**: `WHAC/Store001/*`
+- **QoS**: 1 (at least once delivery)
 
-## 🚀 Usage Examples
+### **Database Settings:**
+- **Host**: localhost
+- **Database**: whac_master
+- **User**: postgres
+- **Password**: Admin123
 
-### 1. Start Server
+## 🚀 Setup Instructions
+
+### **1. Install Dependencies:**
 ```bash
-python3 server_template_manager.py
+cd server/
+pip install -r requirements.txt
 ```
 
-### 2. Export from Sensor A
+### **2. Setup Database:**
 ```bash
-mosquitto_pub -h 103.87.67.139 -t "WHAC/Store001/export" -m '{"request": "export_all"}'
+# Make sure PostgreSQL is running
+# Run the database setup from web_ui folder
+cd ../web_ui/
+psql -U postgres -d whac_master -f database_setup.sql
 ```
 
-### 3. Transfer User to Sensor B
+### **3. Run Server:**
 ```bash
-mosquitto_pub -h 103.87.67.139 -t "WHAC/server/command" -m '{
-    "command": "transfer_user",
-    "user_id": "Store001_1_Joe",
-    "to_store_id": "Store002"
-}'
+cd server/
+python3 mqtt_data_processor.py
 ```
 
-### 4. List All Users
-```bash
-mosquitto_pub -h 103.87.67.139 -t "WHAC/server/command" -m '{
-    "command": "list_users"
-}'
-```
+## 📈 Monitoring
 
-## 🔧 Server Commands
+### **Logs:**
+- **MQTT connection** status
+- **Data processing** events
+- **Database operations** results
+- **Error handling** and recovery
 
-### List All Users
-```json
-{
-    "command": "list_users"
-}
-```
+### **Status Indicators:**
+- **Connected** to MQTT broker
+- **Subscribed** to scan topics
+- **Database** connectivity
+- **Processing** statistics
 
-### Transfer User
-```json
-{
-    "command": "transfer_user",
-    "user_id": "Store001_1_Joe",
-    "to_store_id": "Store002"
-}
-```
+## 🔧 Integration
 
-### Get User Info
-```json
-{
-    "command": "get_user_info",
-    "user_id": "Store001_1_Joe"
-}
-```
+### **With Local Machine:**
+- Receives scan data from `fingerprint_simple_client.py`
+- Processes JSON format data
+- Logs to PostgreSQL database
 
-## ✅ Key Features
+### **With Web UI:**
+- Provides real-time data for dashboard
+- Enables popup notifications
+- Supports admin management
 
-1. **✅ Centralized Management** - All templates in one database
-2. **✅ ID Reassignment** - Different IDs on different sensors
-3. **✅ Easy Transfers** - Move users between locations
-4. **✅ Data Consistency** - Same template everywhere
-5. **✅ Scalable** - Add new sensors easily
-6. **✅ Trackable** - Full transfer history
+## 🎯 What This Solves
 
-## 🎯 Perfect for Your Needs
+### **Missing Communication:**
+- ✅ **Bridges** local machine and web UI
+- ✅ **Processes** MQTT data in real-time
+- ✅ **Logs** all scan data to database
+- ✅ **Enables** real-time notifications
 
-- **Server manages everything** - Central database
-- **ID reassignment** - Different IDs on different sensors
-- **Template consistency** - Same template, different IDs
-- **Easy transfers** - Move users between locations
-- **Scalable** - Add new sensors easily
-- **Trackable** - Full transfer history
+### **Data Flow:**
+- ✅ **Local Machine** → MQTT → **Server** → PostgreSQL → **Web UI**
+- ✅ **Complete integration** between all components
+- ✅ **Real-time processing** and notifications
+- ✅ **Persistent data storage** and retrieval
 
-This is the **server side** of your fingerprint management system!
+This is the **missing link** that connects your local machine fingerprint scanner to the web UI dashboard! 🎉

@@ -1,0 +1,8 @@
+# MQTT Communication
+paho-mqtt==1.6.1
+
+# PostgreSQL Integration
+psycopg2-binary==2.9.7
+
+# Additional dependencies
+python-dotenv==1.0.0

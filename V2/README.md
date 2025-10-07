@@ -7,17 +7,41 @@ A complete fingerprint management system with AS608 sensor, MQTT communication, 
 ```
 ├── local_machine/          # Files for Raspberry Pi 4
 │   ├── fingerprint_simple_client.py  ⭐ Main program
+│   ├── relay_controller.py          # Relay control
+│   ├── postgresql_integration.py    # Database integration
 │   ├── config.py                    # Configuration
 │   ├── requirements.txt             # Dependencies
 │   └── README.md                    # Local setup guide
 │
 ├── server/                 # Files for Server
-│   ├── server_template_manager.py   ⭐ Main server program
-│   ├── SERVER_MANAGEMENT_GUIDE.md   # Server guide
+│   ├── mqtt_data_processor.py       ⭐ MQTT data processor
+│   ├── server_template_manager.py   # Template management
+│   ├── requirements.txt             # Dependencies
 │   └── README.md                    # Server setup guide
 │
+├── web_ui/                 # Web Interface
+│   ├── app.py                      ⭐ Flask web application
+│   ├── templates/                  # HTML templates
+│   ├── database_setup.sql          # Database schema
+│   ├── requirements.txt            # Dependencies
+│   └── README.md                   # Web UI setup guide
+│
+├── start_system.py         # System startup script
 └── README.md               # This file
 ```
+
+## 🔄 Complete Data Flow
+
+```
+Local Machine → MQTT → Server → PostgreSQL → Web UI
+```
+
+### **Real-Time Communication:**
+1. **Local Machine** scans fingerprint and sends to MQTT topic `WHAC/Store001/in`
+2. **Server** (`mqtt_data_processor.py`) receives and processes the data
+3. **Server** logs data to PostgreSQL database
+4. **Web UI** displays data and sends real-time notifications
+5. **Web UI** can send relay commands back to local machine
 
 ## 🎯 Your Use Case - Perfectly Handled!
 
@@ -33,6 +57,34 @@ Sensor A: User Joe (ID 1) → Export → Server → Import to Sensor B (ID 2)
 4. ✅ **Server** automatically assigns new ID 2 for Sensor B
 5. ✅ **Sends** Joe's template to Sensor B with ID 2
 6. ✅ **User Joe** can now use Sensor B with ID 2
+
+## 🚀 Quick Start
+
+### **Option 1: Start All Components (Recommended)**
+```bash
+# Start server and web UI together
+python3 start_system.py
+```
+
+### **Option 2: Start Components Separately**
+```bash
+# 1. Start MQTT Data Processor (Server)
+cd server/
+python3 mqtt_data_processor.py
+
+# 2. Start Web UI (in another terminal)
+cd web_ui/
+python3 app.py
+
+# 3. Start Local Machine (on Raspberry Pi)
+cd local_machine/
+python3 fingerprint_simple_client.py
+```
+
+### **Access Points:**
+- **Web UI**: http://localhost:5000
+- **Login**: admin / admin123
+- **Admin Panel**: Available after login
 
 ## 🚀 Quick Start
 

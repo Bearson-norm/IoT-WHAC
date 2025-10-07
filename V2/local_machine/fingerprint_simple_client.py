@@ -54,6 +54,8 @@ class SimpleFingerprintClient:
         self.ADD_USER_TOPIC = "WHAC/Store001/add_user"  # for adding users
         self.IMPORT_TOPIC = "WHAC/Store001/import"  # for importing users
         self.EXPORT_TOPIC = "WHAC/Store001/export"  # for exporting users
+        self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
+        self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
         
     def connect_sensor(self, retries=3):
         """Connect to AS608 fingerprint sensor"""
@@ -107,10 +109,12 @@ class SimpleFingerprintClient:
                 self.mqtt_client.subscribe(self.ADD_USER_TOPIC, qos=MQTT_QOS)
                 self.mqtt_client.subscribe(self.IMPORT_TOPIC, qos=MQTT_QOS)
                 self.mqtt_client.subscribe(self.EXPORT_TOPIC, qos=MQTT_QOS)
+                self.mqtt_client.subscribe(self.ACTION_TOPIC, qos=MQTT_QOS)
                 logger.info(f"✓ Subscribed to command topics:")
                 logger.info(f"  - {self.ADD_USER_TOPIC}")
                 logger.info(f"  - {self.IMPORT_TOPIC}")
                 logger.info(f"  - {self.EXPORT_TOPIC}")
+                logger.info(f"  - {self.ACTION_TOPIC}")
                 return True
             else:
                 logger.error("✗ Failed to connect to MQTT broker within timeout")
@@ -149,6 +153,8 @@ class SimpleFingerprintClient:
                 self.handle_import_command(payload)
             elif topic == self.EXPORT_TOPIC:
                 self.handle_export_command(payload)
+            elif topic == self.ACTION_TOPIC:
+                self.handle_relay_command(payload)
                 
         except Exception as e:
             logger.error(f"Error handling MQTT message: {e}")
@@ -174,6 +180,26 @@ class SimpleFingerprintClient:
             
         except Exception as e:
             logger.error(f"Database initialization error: {e}")
+    
+    def handle_relay_command(self, payload):
+        """Handle relay control command"""
+        try:
+            command = payload.get('command')
+            user_id = payload.get('user_id')
+            action = payload.get('action')
+            source = payload.get('source')
+            
+            logger.info(f"Received relay command: {command} for user {user_id}")
+            
+            if command == 'grant':
+                self.relay_controller.grant_access(user_id, action, source)
+            elif command == 'deny':
+                self.relay_controller.deny_access(user_id, action, source)
+            else:
+                logger.warning(f"Unknown relay command: {command}")
+                
+        except Exception as e:
+            logger.error(f"Error handling relay command: {e}")
     
     def send_scan_result(self, action, fingerprint_id):
         """Send scan result in simple format"""

@@ -81,6 +81,9 @@ def on_mqtt_message(client, userdata, msg):
         payload = json.loads(msg.payload.decode())
         logger.info(f"Received scan notification: {payload}")
         
+        # Process the scan data and log to database
+        process_incoming_scan(payload)
+        
         # Emit to all connected WebSocket clients
         socketio.emit('scan_notification', {
             'user_id': payload.get('fingerprint_id'),
@@ -92,6 +95,89 @@ def on_mqtt_message(client, userdata, msg):
         
     except Exception as e:
         logger.error(f"Error processing MQTT message: {e}")
+
+def process_incoming_scan(data):
+    """Process incoming scan data and log to database"""
+    try:
+        store_id = data.get('store_id')
+        timestamp = data.get('timestamp')
+        action = data.get('action')
+        fingerprint_id = data.get('fingerprint_id')
+        device_id = data.get('device_id')
+        
+        if not all([store_id, timestamp, action, fingerprint_id is not None, device_id]):
+            logger.warning(f"Incomplete scan data: {data}")
+            return
+        
+        # Parse timestamp
+        try:
+            scan_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+        except:
+            scan_time = datetime.now()
+        
+        # Get user information
+        user_info = get_user_info_from_fingerprint(fingerprint_id)
+        username = user_info.get('username') if user_info else None
+        
+        # Log to database
+        log_scan_to_database(store_id, fingerprint_id, scan_time, action, username)
+        
+        logger.info(f"✓ Processed incoming scan: {action} for user {fingerprint_id} ({username})")
+        
+    except Exception as e:
+        logger.error(f"Error processing incoming scan: {e}")
+
+def get_user_info_from_fingerprint(fingerprint_id):
+    """Get user information from fingerprint ID"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return None
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute("""
+            SELECT username FROM store_001 WHERE user_id = %s
+        """, (fingerprint_id,))
+        
+        result = cursor.fetchone()
+        conn.close()
+        
+        return dict(result) if result else None
+        
+    except Exception as e:
+        logger.error(f"Error getting user info from fingerprint: {e}")
+        return None
+
+def log_scan_to_database(store_id, fingerprint_id, timestamp, action, username):
+    """Log scan data to database"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        cursor = conn.cursor()
+        
+        # Log to log_data table
+        cursor.execute("""
+            INSERT INTO log_data (user_id, store_id, timestamp, finger_template_id)
+            VALUES (%s, %s, %s, %s)
+        """, (fingerprint_id, store_id, timestamp, fingerprint_id))
+        
+        # Log to log_action table
+        granted_denied = "granted" if action in ["access_granted"] else "denied"
+        cursor.execute("""
+            INSERT INTO log_action (user_id, store_id, username, timestamp, action, granted_denied)
+            VALUES (%s, %s, %s, %s, %s, %s)
+        """, (fingerprint_id, store_id, username, timestamp, action, granted_denied))
+        
+        conn.commit()
+        conn.close()
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error logging scan to database: {e}")
+        return False
 
 @socketio.on('connect')
 def handle_connect():
@@ -563,6 +649,412 @@ def change_password():
             return render_template('change_password.html')
     
     return render_template('change_password.html')
+
+@app.route('/admin')
+@login_required
+def admin_dashboard():
+    """Admin dashboard for user management"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        flash('Access denied. Admin privileges required.', 'error')
+        return redirect(url_for('index'))
+    
+    return render_template('admin.html')
+
+@app.route('/api/admin/web_users')
+@login_required
+def get_web_users():
+    """Get all web UI users (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute("""
+            SELECT id, username, full_name, email, role, is_active, 
+                   created_at, last_login, login_attempts, locked_until
+            FROM web_users
+            ORDER BY created_at DESC
+        """)
+        
+        users = cursor.fetchall()
+        conn.close()
+        
+        return jsonify([dict(user) for user in users])
+        
+    except Exception as e:
+        logger.error(f"Error getting web users: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/web_users', methods=['POST'])
+@login_required
+def create_web_user():
+    """Create new web UI user (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        password = data.get('password')
+        full_name = data.get('full_name')
+        email = data.get('email')
+        role = data.get('role', 'viewer')
+        
+        if not all([username, password]):
+            return jsonify({'error': 'Username and password are required'}), 400
+        
+        if len(password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters long'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Check if username already exists
+        cursor.execute("SELECT id FROM web_users WHERE username = %s", (username,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Username already exists'}), 400
+        
+        # Hash password and create user
+        password_hash = hash_password(password)
+        cursor.execute("""
+            INSERT INTO web_users (username, password_hash, full_name, email, role, is_active, created_at)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (username, password_hash, full_name, email, role, True, datetime.now()))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Admin {user['username']} created new web user: {username}")
+        return jsonify({'message': f'User {username} created successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error creating web user: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/web_users/<int:user_id>', methods=['PUT'])
+@login_required
+def update_web_user(user_id):
+    """Update web UI user (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        data = request.get_json()
+        full_name = data.get('full_name')
+        email = data.get('email')
+        role = data.get('role')
+        is_active = data.get('is_active')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Check if user exists
+        cursor.execute("SELECT username FROM web_users WHERE id = %s", (user_id,))
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        username = result[0]
+        
+        # Update user
+        cursor.execute("""
+            UPDATE web_users 
+            SET full_name = %s, email = %s, role = %s, is_active = %s
+            WHERE id = %s
+        """, (full_name, email, role, is_active, user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Admin {user['username']} updated web user: {username}")
+        return jsonify({'message': f'User {username} updated successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error updating web user: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/web_users/<int:user_id>', methods=['DELETE'])
+@login_required
+def delete_web_user(user_id):
+    """Delete web UI user (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Check if user exists
+        cursor.execute("SELECT username FROM web_users WHERE id = %s", (user_id,))
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        username = result[0]
+        
+        # Don't allow deleting the last admin
+        cursor.execute("SELECT COUNT(*) FROM web_users WHERE role = 'admin' AND is_active = TRUE")
+        admin_count = cursor.fetchone()[0]
+        
+        cursor.execute("SELECT role FROM web_users WHERE id = %s", (user_id,))
+        user_role = cursor.fetchone()[0]
+        
+        if user_role == 'admin' and admin_count <= 1:
+            conn.close()
+            return jsonify({'error': 'Cannot delete the last admin user'}), 400
+        
+        # Delete user sessions first
+        cursor.execute("DELETE FROM user_sessions WHERE user_id = %s", (user_id,))
+        
+        # Delete user
+        cursor.execute("DELETE FROM web_users WHERE id = %s", (user_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Admin {user['username']} deleted web user: {username}")
+        return jsonify({'message': f'User {username} deleted successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error deleting web user: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/web_users/<int:user_id>/reset_password', methods=['POST'])
+@login_required
+def reset_web_user_password(user_id):
+    """Reset web UI user password (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        data = request.get_json()
+        new_password = data.get('password')
+        
+        if not new_password or len(new_password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters long'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Check if user exists
+        cursor.execute("SELECT username FROM web_users WHERE id = %s", (user_id,))
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        username = result[0]
+        
+        # Update password
+        password_hash = hash_password(new_password)
+        cursor.execute("""
+            UPDATE web_users 
+            SET password_hash = %s, login_attempts = 0, locked_until = NULL
+            WHERE id = %s
+        """, (password_hash, user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Admin {user['username']} reset password for web user: {username}")
+        return jsonify({'message': f'Password reset successfully for {username}'})
+        
+    except Exception as e:
+        logger.error(f"Error resetting web user password: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/fingerprint_users')
+@login_required
+def get_fingerprint_users():
+    """Get all fingerprint users (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        cursor.execute("""
+            SELECT user_id, username, finger_template_id
+            FROM store_001
+            ORDER BY user_id
+        """)
+        
+        users = cursor.fetchall()
+        conn.close()
+        
+        return jsonify([dict(user) for user in users])
+        
+    except Exception as e:
+        logger.error(f"Error getting fingerprint users: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/fingerprint_users', methods=['POST'])
+@login_required
+def create_fingerprint_user():
+    """Create new fingerprint user (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        username = data.get('username')
+        finger_template_id = data.get('finger_template_id')
+        
+        if not all([user_id, username, finger_template_id]):
+            return jsonify({'error': 'User ID, username, and fingerprint template ID are required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Check if user ID already exists
+        cursor.execute("SELECT user_id FROM store_001 WHERE user_id = %s", (user_id,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'User ID already exists'}), 400
+        
+        # Check if fingerprint template ID already exists
+        cursor.execute("SELECT finger_template_id FROM store_001 WHERE finger_template_id = %s", (finger_template_id,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Fingerprint template ID already exists'}), 400
+        
+        # Create user
+        cursor.execute("""
+            INSERT INTO store_001 (user_id, username, finger_template_id)
+            VALUES (%s, %s, %s)
+        """, (user_id, username, finger_template_id))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Admin {user['username']} created new fingerprint user: {username} (ID: {user_id})")
+        return jsonify({'message': f'Fingerprint user {username} created successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error creating fingerprint user: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/fingerprint_users/<int:user_id>', methods=['PUT'])
+@login_required
+def update_fingerprint_user(user_id):
+    """Update fingerprint user (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        data = request.get_json()
+        username = data.get('username')
+        finger_template_id = data.get('finger_template_id')
+        
+        if not all([username, finger_template_id]):
+            return jsonify({'error': 'Username and fingerprint template ID are required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Check if user exists
+        cursor.execute("SELECT user_id FROM store_001 WHERE user_id = %s", (user_id,))
+        if not cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        # Check if new fingerprint template ID already exists (excluding current user)
+        cursor.execute("SELECT finger_template_id FROM store_001 WHERE finger_template_id = %s AND user_id != %s", (finger_template_id, user_id))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': 'Fingerprint template ID already exists'}), 400
+        
+        # Update user
+        cursor.execute("""
+            UPDATE store_001 
+            SET username = %s, finger_template_id = %s
+            WHERE user_id = %s
+        """, (username, finger_template_id, user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Admin {user['username']} updated fingerprint user: {username} (ID: {user_id})")
+        return jsonify({'message': f'Fingerprint user {username} updated successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error updating fingerprint user: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/admin/fingerprint_users/<int:user_id>', methods=['DELETE'])
+@login_required
+def delete_fingerprint_user(user_id):
+    """Delete fingerprint user (admin only)"""
+    user = get_current_user()
+    if not user or user.get('role') != 'admin':
+        return jsonify({'error': 'Access denied'}), 403
+    
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Check if user exists
+        cursor.execute("SELECT username FROM store_001 WHERE user_id = %s", (user_id,))
+        result = cursor.fetchone()
+        if not result:
+            conn.close()
+            return jsonify({'error': 'User not found'}), 404
+        
+        username = result[0]
+        
+        # Delete user
+        cursor.execute("DELETE FROM store_001 WHERE user_id = %s", (user_id,))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"Admin {user['username']} deleted fingerprint user: {username} (ID: {user_id})")
+        return jsonify({'message': f'Fingerprint user {username} deleted successfully'})
+        
+    except Exception as e:
+        logger.error(f"Error deleting fingerprint user: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/dashboard_stats')
 @login_required
