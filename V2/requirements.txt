@@ -1,0 +1,11 @@
+# MQTT Communication
+paho-mqtt==1.6.1
+
+# Serial Communication for AS608
+pyserial==3.5
+
+# Adafruit Fingerprint Library
+adafruit-circuitpython-fingerprint==2.2.22
+
+# Additional dependencies that might be needed
+adafruit-blinka==8.66.2

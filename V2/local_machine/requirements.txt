@@ -1,0 +1,17 @@
+# MQTT Communication
+paho-mqtt==1.6.1
+
+# Serial Communication for AS608
+pyserial==3.5
+
+# Adafruit Fingerprint Library
+adafruit-circuitpython-fingerprint==2.2.22
+
+# Additional dependencies that might be needed
+adafruit-blinka==8.66.2
+
+# PostgreSQL Integration
+psycopg2-binary==2.9.7
+
+# GPIO Control for Relay
+RPi.GPIO==0.7.1

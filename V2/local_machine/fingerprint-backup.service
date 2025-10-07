@@ -1,0 +1,14 @@
+[Unit]
+Description=Fingerprint Auto Backup Service
+After=network.target
+
+[Service]
+Type=oneshot
+User=pi
+WorkingDirectory=/home/pi/fingerprint-project
+ExecStart=/usr/bin/python3 /home/pi/fingerprint-project/auto_backup.py
+StandardOutput=journal
+StandardError=journal
+
+[Install]
+WantedBy=multi-user.target

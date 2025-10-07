@@ -1,0 +1,230 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WHAC Fingerprint System - Login</title>
+    <link href="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/css/bootstrap.min.css" rel="stylesheet">
+    <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+        }
+        
+        .login-container {
+            background: rgba(255, 255, 255, 0.95);
+            border-radius: 20px;
+            box-shadow: 0 20px 40px rgba(0, 0, 0, 0.1);
+            padding: 3rem;
+            width: 100%;
+            max-width: 400px;
+            backdrop-filter: blur(10px);
+        }
+        
+        .login-header {
+            text-align: center;
+            margin-bottom: 2rem;
+        }
+        
+        .login-header h1 {
+            color: #333;
+            font-weight: 700;
+            margin-bottom: 0.5rem;
+        }
+        
+        .login-header p {
+            color: #666;
+            margin: 0;
+        }
+        
+        .form-floating {
+            margin-bottom: 1.5rem;
+        }
+        
+        .form-control {
+            border: 2px solid #e9ecef;
+            border-radius: 10px;
+            padding: 1rem 0.75rem;
+            font-size: 1rem;
+            transition: all 0.3s ease;
+        }
+        
+        .form-control:focus {
+            border-color: #667eea;
+            box-shadow: 0 0 0 0.2rem rgba(102, 126, 234, 0.25);
+        }
+        
+        .btn-login {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border: none;
+            border-radius: 10px;
+            padding: 0.75rem 2rem;
+            font-weight: 600;
+            font-size: 1.1rem;
+            color: white;
+            width: 100%;
+            transition: all 0.3s ease;
+        }
+        
+        .btn-login:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 20px rgba(102, 126, 234, 0.3);
+            color: white;
+        }
+        
+        .alert {
+            border-radius: 10px;
+            border: none;
+            margin-bottom: 1.5rem;
+        }
+        
+        .alert-success {
+            background: linear-gradient(135deg, #56ab2f 0%, #a8e6cf 100%);
+            color: white;
+        }
+        
+        .alert-danger {
+            background: linear-gradient(135deg, #ff416c 0%, #ff4b2b 100%);
+            color: white;
+        }
+        
+        .alert-info {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+        }
+        
+        .security-info {
+            background: rgba(102, 126, 234, 0.1);
+            border-radius: 10px;
+            padding: 1rem;
+            margin-top: 2rem;
+            text-align: center;
+        }
+        
+        .security-info i {
+            color: #667eea;
+            font-size: 1.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
+        .security-info p {
+            color: #666;
+            font-size: 0.9rem;
+            margin: 0;
+        }
+        
+        .fingerprint-icon {
+            font-size: 3rem;
+            color: #667eea;
+            margin-bottom: 1rem;
+        }
+        
+        .loading {
+            display: none;
+        }
+        
+        .loading.show {
+            display: inline-block;
+        }
+    </style>
+</head>
+<body>
+    <div class="login-container">
+        <div class="login-header">
+            <i class="fas fa-fingerprint fingerprint-icon"></i>
+            <h1>WHAC System</h1>
+            <p>Fingerprint Access Control</p>
+        </div>
+        
+        <!-- Flash Messages -->
+        {% with messages = get_flashed_messages(with_categories=true) %}
+            {% if messages %}
+                {% for category, message in messages %}
+                    <div class="alert alert-{{ 'danger' if category == 'error' else category }} alert-dismissible fade show" role="alert">
+                        <i class="fas fa-{{ 'exclamation-circle' if category == 'error' else 'check-circle' if category == 'success' else 'info-circle' }} me-2"></i>
+                        {{ message }}
+                        <button type="button" class="btn-close" data-bs-dismiss="alert"></button>
+                    </div>
+                {% endfor %}
+            {% endif %}
+        {% endwith %}
+        
+        <form method="POST" id="loginForm">
+            <div class="form-floating">
+                <input type="text" class="form-control" id="username" name="username" placeholder="Username" required autocomplete="username">
+                <label for="username">
+                    <i class="fas fa-user me-2"></i>Username
+                </label>
+            </div>
+            
+            <div class="form-floating">
+                <input type="password" class="form-control" id="password" name="password" placeholder="Password" required autocomplete="current-password">
+                <label for="password">
+                    <i class="fas fa-lock me-2"></i>Password
+                </label>
+            </div>
+            
+            <button type="submit" class="btn btn-login" id="loginBtn">
+                <span class="btn-text">
+                    <i class="fas fa-sign-in-alt me-2"></i>Login
+                </span>
+                <span class="loading">
+                    <i class="fas fa-spinner fa-spin me-2"></i>Logging in...
+                </span>
+            </button>
+        </form>
+        
+        <div class="security-info">
+            <i class="fas fa-shield-alt"></i>
+            <p><strong>Secure Login</strong><br>
+            Your session is protected with encryption</p>
+        </div>
+    </div>
+    
+    <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
+    <script>
+        document.getElementById('loginForm').addEventListener('submit', function(e) {
+            const btn = document.getElementById('loginBtn');
+            const btnText = btn.querySelector('.btn-text');
+            const loading = btn.querySelector('.loading');
+            
+            // Show loading state
+            btnText.style.display = 'none';
+            loading.classList.add('show');
+            btn.disabled = true;
+            
+            // Re-enable button after 5 seconds (in case of error)
+            setTimeout(() => {
+                btnText.style.display = 'inline';
+                loading.classList.remove('show');
+                btn.disabled = false;
+            }, 5000);
+        });
+        
+        // Auto-focus username field
+        document.getElementById('username').focus();
+        
+        // Handle Enter key
+        document.addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                document.getElementById('loginForm').submit();
+            }
+        });
+        
+        // Auto-dismiss alerts after 5 seconds
+        setTimeout(() => {
+            const alerts = document.querySelectorAll('.alert');
+            alerts.forEach(alert => {
+                const bsAlert = new bootstrap.Alert(alert);
+                bsAlert.close();
+            });
+        }, 5000);
+    </script>
+</body>
+</html>
+
