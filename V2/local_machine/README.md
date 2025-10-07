@@ -137,9 +137,11 @@ Systemd service file for automatic backup on startup
 {
     "store_id": "Store001",
     "timestamp": "2024-01-15T10:30:45.123456",
-    "action": "access_granted",
+    "status": "Match",
     "fingerprint_id": 1,
-    "device_id": "AS608_001"
+    "device_id": "AS608_001",
+    "username": "John Doe",
+    "confidence": 85
 }
 ```
 

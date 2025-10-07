@@ -107,11 +107,13 @@ class MQTTDataProcessor:
         try:
             store_id = data.get('store_id')
             timestamp = data.get('timestamp')
-            action = data.get('action')
+            status = data.get('status')  # "Match" or "Not Match"
             fingerprint_id = data.get('fingerprint_id')
             device_id = data.get('device_id')
+            username = data.get('username')  # From local machine
+            confidence = data.get('confidence')
             
-            if not all([store_id, timestamp, action, fingerprint_id is not None, device_id]):
+            if not all([store_id, timestamp, status, fingerprint_id is not None, device_id]):
                 logger.warning(f"Incomplete scan data: {data}")
                 return
             
@@ -121,15 +123,19 @@ class MQTTDataProcessor:
             except:
                 scan_time = datetime.now()
             
-            # Get user information
-            user_info = self.get_user_info(fingerprint_id)
-            username = user_info.get('username') if user_info else None
+            # Determine action based on status
+            if status == "Match":
+                action = "scan_detected"
+                granted_denied = "pending"  # Waiting for admin decision
+            else:
+                action = "no_match"
+                granted_denied = "denied"
             
             # Log to database
             self.log_scan_data(store_id, fingerprint_id, scan_time, action, username)
             
             # Log action
-            self.log_action(store_id, fingerprint_id, username, scan_time, action)
+            self.log_action(store_id, fingerprint_id, username, scan_time, action, granted_denied)
             
             # Send status update
             self.send_status_update(store_id, fingerprint_id, action, device_id)
@@ -182,7 +188,7 @@ class MQTTDataProcessor:
             logger.error(f"Error logging scan data: {e}")
             return False
     
-    def log_action(self, store_id, fingerprint_id, username, timestamp, action):
+    def log_action(self, store_id, fingerprint_id, username, timestamp, action, granted_denied="denied"):
         """Log action to database"""
         try:
             conn = self.get_db_connection()
@@ -190,9 +196,6 @@ class MQTTDataProcessor:
                 return False
             
             cursor = conn.cursor()
-            
-            # Determine granted/denied status
-            granted_denied = "granted" if action in ["access_granted"] else "denied"
             
             cursor.execute("""
                 INSERT INTO log_action (user_id, store_id, username, timestamp, action, granted_denied)

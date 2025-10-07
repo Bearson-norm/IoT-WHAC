@@ -87,7 +87,9 @@ def on_mqtt_message(client, userdata, msg):
         # Emit to all connected WebSocket clients
         socketio.emit('scan_notification', {
             'user_id': payload.get('fingerprint_id'),
-            'action': payload.get('action'),
+            'status': payload.get('status'),
+            'username': payload.get('username'),
+            'confidence': payload.get('confidence'),
             'timestamp': payload.get('timestamp'),
             'store_id': payload.get('store_id'),
             'device_id': payload.get('device_id')
@@ -101,11 +103,13 @@ def process_incoming_scan(data):
     try:
         store_id = data.get('store_id')
         timestamp = data.get('timestamp')
-        action = data.get('action')
+        status = data.get('status')  # "Match" or "Not Match"
         fingerprint_id = data.get('fingerprint_id')
         device_id = data.get('device_id')
+        username = data.get('username')
+        confidence = data.get('confidence')
         
-        if not all([store_id, timestamp, action, fingerprint_id is not None, device_id]):
+        if not all([store_id, timestamp, status, fingerprint_id is not None, device_id]):
             logger.warning(f"Incomplete scan data: {data}")
             return
         
@@ -115,14 +119,23 @@ def process_incoming_scan(data):
         except:
             scan_time = datetime.now()
         
-        # Get user information
-        user_info = get_user_info_from_fingerprint(fingerprint_id)
-        username = user_info.get('username') if user_info else None
+        # Determine action based on status
+        if status == "Match":
+            action = "scan_detected"
+            granted_denied = "pending"  # Waiting for admin decision
+        else:
+            action = "no_match"
+            granted_denied = "denied"
+        
+        # Use username from payload if available, otherwise get from database
+        if not username:
+            user_info = get_user_info_from_fingerprint(fingerprint_id)
+            username = user_info.get('username') if user_info else None
         
         # Log to database
-        log_scan_to_database(store_id, fingerprint_id, scan_time, action, username)
+        log_scan_to_database(store_id, fingerprint_id, scan_time, action, username, granted_denied)
         
-        logger.info(f"✓ Processed incoming scan: {action} for user {fingerprint_id} ({username})")
+        logger.info(f"✓ Processed incoming scan: {status} for user {fingerprint_id} ({username})")
         
     except Exception as e:
         logger.error(f"Error processing incoming scan: {e}")
@@ -148,7 +161,7 @@ def get_user_info_from_fingerprint(fingerprint_id):
         logger.error(f"Error getting user info from fingerprint: {e}")
         return None
 
-def log_scan_to_database(store_id, fingerprint_id, timestamp, action, username):
+def log_scan_to_database(store_id, fingerprint_id, timestamp, action, username, granted_denied="denied"):
     """Log scan data to database"""
     try:
         conn = get_db_connection()
@@ -164,7 +177,6 @@ def log_scan_to_database(store_id, fingerprint_id, timestamp, action, username):
         """, (fingerprint_id, store_id, timestamp, fingerprint_id))
         
         # Log to log_action table
-        granted_denied = "granted" if action in ["access_granted"] else "denied"
         cursor.execute("""
             INSERT INTO log_action (user_id, store_id, username, timestamp, action, granted_denied)
             VALUES (%s, %s, %s, %s, %s, %s)

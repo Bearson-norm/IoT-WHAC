@@ -19,8 +19,6 @@ import glob
 import os
 from datetime import datetime
 from config import *
-from postgresql_integration import PostgreSQLIntegration
-from relay_controller import RelayController
 
 # Configure logging
 logging.basicConfig(
@@ -45,11 +43,9 @@ class SimpleFingerprintClient:
         self.db_file = "fingerprints.db"
         self.init_database()
         
-        # PostgreSQL integration
-        self.postgres_db = PostgreSQLIntegration()
-        
-        # Relay controller
-        self.relay_controller = RelayController()
+        # Relay control
+        self.relay_pin = 18  # GPIO pin for relay
+        self.setup_gpio()
         
         # Auto-detect fingerprint sensor port
         self.detected_port = self.auto_detect_fingerprint_port()
@@ -61,6 +57,43 @@ class SimpleFingerprintClient:
         self.EXPORT_TOPIC = "WHAC/Store001/export"  # for exporting users
         self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
         self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
+    
+    def setup_gpio(self):
+        """Setup GPIO for relay control"""
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.relay_pin, GPIO.OUT)
+            GPIO.output(self.relay_pin, GPIO.LOW)  # Start with relay OFF
+            logger.info(f"✓ GPIO setup complete - Relay on pin {self.relay_pin}")
+        except ImportError:
+            logger.warning("RPi.GPIO not available - relay control disabled")
+            self.relay_pin = None
+        except Exception as e:
+            logger.error(f"GPIO setup error: {e}")
+            self.relay_pin = None
+    
+    def control_relay(self, action, duration=10):
+        """Control relay for specified duration"""
+        if not self.relay_pin:
+            logger.warning("Relay control not available")
+            return
+        
+        try:
+            import RPi.GPIO as GPIO
+            
+            if action == "grant":
+                logger.info(f"🔓 Granting access - Relay ON for {duration} seconds")
+                GPIO.output(self.relay_pin, GPIO.HIGH)
+                time.sleep(duration)
+                GPIO.output(self.relay_pin, GPIO.LOW)
+                logger.info("🔒 Access period ended - Relay OFF")
+            elif action == "deny":
+                logger.info("🚫 Access denied - Relay remains OFF")
+                GPIO.output(self.relay_pin, GPIO.LOW)
+                
+        except Exception as e:
+            logger.error(f"Relay control error: {e}")
     
     def auto_detect_fingerprint_port(self):
         """Auto-detect AS608 fingerprint sensor port"""
@@ -254,37 +287,78 @@ class SimpleFingerprintClient:
             
             logger.info(f"Received relay command: {command} for user {user_id}")
             
-            if command == 'grant':
-                self.relay_controller.grant_access(user_id, action, source)
-            elif command == 'deny':
-                self.relay_controller.deny_access(user_id, action, source)
-            else:
-                logger.warning(f"Unknown relay command: {command}")
+            # Control relay based on command
+            self.control_relay(command, duration=10)
+            
+            # Send status update
+            self.send_relay_status(command, user_id, action, source)
                 
         except Exception as e:
             logger.error(f"Error handling relay command: {e}")
     
-    def send_scan_result(self, action, fingerprint_id):
+    def send_relay_status(self, command, user_id, action, source):
+        """Send relay status update"""
+        try:
+            if not self.connected:
+                return False
+            
+            payload = {
+                'command': command,
+                'user_id': user_id,
+                'action': action,
+                'source': source,
+                'timestamp': datetime.now().isoformat(),
+                'relay_pin': self.relay_pin,
+                'device_id': 'AS608_001',
+                'status': 'completed'
+            }
+            
+            result = self.mqtt_client.publish(self.STATUS_TOPIC, json.dumps(payload))
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"✓ Relay status sent: {command} for user {user_id}")
+                return True
+            else:
+                logger.error(f"✗ Failed to send relay status (rc: {result.rc})")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending relay status: {e}")
+            return False
+    
+    def send_scan_result(self, status, fingerprint_id, confidence=None):
         """Send scan result in simple format"""
         if not self.connected:
             logger.error("MQTT not connected, cannot send data")
             return False
         
         try:
+            # Get user info from local database
+            user_info = self.get_user_info(fingerprint_id)
+            username = user_info.get('username') if user_info else None
+            
             # Simple JSON format as requested
             data = {
                 "store_id": STORE_ID,
                 "timestamp": datetime.now().isoformat(),
-                "action": action,
+                "status": status,  # "Match" or "Not Match"
                 "fingerprint_id": fingerprint_id,
                 "device_id": "AS608_001"
             }
+            
+            # Add username if available
+            if username:
+                data["username"] = username
+            
+            # Add confidence if provided
+            if confidence is not None:
+                data["confidence"] = confidence
             
             payload = json.dumps(data)
             result = self.mqtt_client.publish(self.SCAN_TOPIC, payload, qos=MQTT_QOS)
             
             if result.rc == mqtt.MQTT_ERR_SUCCESS:
-                logger.info(f"✓ Scan result sent: {action} - ID: {fingerprint_id}")
+                logger.info(f"✓ Scan result sent: {status} - ID: {fingerprint_id} ({username})")
                 return True
             else:
                 logger.error(f"✗ Failed to publish scan result (rc: {result.rc})")
@@ -593,27 +667,15 @@ class SimpleFingerprintClient:
                         
                         logger.info(f"✓ Match found! ID: {finger_id}, Confidence: {confidence}")
                         
-                        # Check confidence threshold
-                        if confidence >= CONFIDENCE_THRESHOLD:
-                            # Send approved result
-                            self.send_scan_result("access_granted", finger_id)
-                            # Log to PostgreSQL
-                            self.postgres_db.process_fingerprint_result(finger_id, confidence, "access_granted", STORE_ID)
-                        else:
-                            # Send rejected result
-                            logger.warning(f"Confidence too low: {confidence} < {CONFIDENCE_THRESHOLD}")
-                            self.send_scan_result("access_denied", finger_id)
-                            # Log to PostgreSQL
-                            self.postgres_db.process_fingerprint_result(finger_id, confidence, "access_denied", STORE_ID)
+                        # Always send scan result with status "Match" and confidence
+                        self.send_scan_result("Match", finger_id, confidence)
                         
                         self.last_scan_time = current_time
                         return True
                     else:
                         # No match found
                         logger.info("✗ No match found")
-                        self.send_scan_result("no_match", 0)
-                        # Log to PostgreSQL
-                        self.postgres_db.process_fingerprint_result(0, 0, "no_match", STORE_ID)
+                        self.send_scan_result("Not Match", 0, 0)
                         self.last_scan_time = current_time
                         return True
                 else:
@@ -667,13 +729,13 @@ class SimpleFingerprintClient:
             self.uart.close()
             logger.info("Serial connection closed")
         
-        if self.postgres_db:
-            self.postgres_db.close()
-            logger.info("PostgreSQL connection closed")
-        
-        if self.relay_controller:
-            self.relay_controller.cleanup()
-            logger.info("Relay controller cleaned up")
+        # Cleanup GPIO
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.cleanup()
+            logger.info("GPIO cleaned up")
+        except:
+            pass
 
 def main():
     """Main function"""

@@ -427,10 +427,12 @@
             
             // Get user information
             let userInfo = 'Unknown User';
-            if (data.user_id && data.user_id > 0) {
-                userInfo = `User ID: ${data.user_id}`;
-                // Try to get username from current users data
-                // This could be enhanced to fetch from database
+            if (data.status === 'Match' && data.user_id && data.user_id > 0) {
+                if (data.username) {
+                    userInfo = `${data.username} (ID: ${data.user_id})`;
+                } else {
+                    userInfo = `User ID: ${data.user_id}`;
+                }
             } else {
                 userInfo = 'Unknown User (No Match)';
             }
@@ -438,9 +440,20 @@
             // Update modal content
             document.getElementById('scanUserInfo').textContent = userInfo;
             document.getElementById('scanTimestamp').textContent = new Date(data.timestamp).toLocaleString();
-            document.getElementById('scanAction').textContent = data.action;
+            document.getElementById('scanAction').textContent = data.status;
             document.getElementById('scanUserId').textContent = data.user_id || 'N/A';
             document.getElementById('scanStoreId').textContent = data.store_id || 'Store001';
+            
+            // Add confidence info if available
+            if (data.confidence) {
+                const details = document.getElementById('scanDetails');
+                details.innerHTML = `
+                    <strong>Status:</strong> <span id="scanAction">${data.status}</span><br>
+                    <strong>User ID:</strong> <span id="scanUserId">${data.user_id || 'N/A'}</span><br>
+                    <strong>Store:</strong> <span id="scanStoreId">${data.store_id || 'Store001'}</span><br>
+                    <strong>Confidence:</strong> ${data.confidence}%
+                `;
+            }
             
             // Show the modal
             const modal = new bootstrap.Modal(document.getElementById('scanNotificationModal'));
@@ -456,7 +469,8 @@
             
             socket.emit('grant_access', {
                 user_id: currentScanData.user_id,
-                action: currentScanData.action
+                action: currentScanData.status,
+                username: currentScanData.username
             });
         }
 
@@ -466,7 +480,8 @@
             
             socket.emit('deny_access', {
                 user_id: currentScanData.user_id,
-                action: currentScanData.action
+                action: currentScanData.status,
+                username: currentScanData.username
             });
         }
 
