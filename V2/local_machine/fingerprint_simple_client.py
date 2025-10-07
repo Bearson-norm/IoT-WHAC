@@ -343,6 +343,14 @@ class SimpleFingerprintClient:
                 )
             ''')
             
+            # Add a test user if database is empty
+            cursor.execute("SELECT COUNT(*) FROM users")
+            user_count = cursor.fetchone()[0]
+            
+            if user_count == 0:
+                cursor.execute("INSERT INTO users (fingerprint_id, user_name) VALUES (1, 'Test User')")
+                logger.info("✓ Added test user: Test User (ID: 1)")
+            
             conn.commit()
             conn.close()
             logger.info(f"✓ Database initialized: {self.db_file}")
@@ -440,6 +448,24 @@ class SimpleFingerprintClient:
         except Exception as e:
             logger.error(f"Error sending scan result: {e}")
             return False
+    
+    def get_user_info(self, fingerprint_id):
+        """Get user information from local database"""
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_name FROM users WHERE fingerprint_id = ?", (fingerprint_id,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return {"username": result[0]}
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting user info: {e}")
+            return None
     
     def handle_add_user_command(self, payload):
         """Handle add user command"""
