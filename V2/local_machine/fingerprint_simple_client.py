@@ -99,35 +99,65 @@ class SimpleFingerprintClient:
         """Auto-detect AS608 fingerprint sensor port"""
         logger.info("🔍 Auto-detecting fingerprint sensor port...")
         
-        # Common ports for AS608 fingerprint sensors
-        possible_ports = [
-            "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyUSB2", "/dev/ttyUSB3",
-            "/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3",
-            "/dev/ttyS0", "/dev/ttyS1", "/dev/ttyS2", "/dev/ttyS3",
-            "COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"
-        ]
-        
-        # Try to find USB serial devices
-        if os.name == 'posix':  # Linux/Unix
-            usb_ports = glob.glob('/dev/ttyUSB*') + glob.glob('/dev/ttyACM*')
-            possible_ports = usb_ports + possible_ports
+        # First, let's see what ports are actually available
+        if os.name == 'posix':  # Linux/Unix (Raspberry Pi)
+            logger.info("📋 Scanning for available serial ports...")
+            all_ports = []
+            
+            # Check common USB serial patterns
+            usb_patterns = ['/dev/ttyUSB*', '/dev/ttyACM*', '/dev/tty.usbserial*', '/dev/tty.usbmodem*']
+            for pattern in usb_patterns:
+                found_ports = glob.glob(pattern)
+                all_ports.extend(found_ports)
+                if found_ports:
+                    logger.info(f"  Found USB ports: {found_ports}")
+            
+            # Check built-in serial ports
+            builtin_patterns = ['/dev/ttyS*', '/dev/ttyAMA*']
+            for pattern in builtin_patterns:
+                found_ports = glob.glob(pattern)
+                all_ports.extend(found_ports)
+                if found_ports:
+                    logger.info(f"  Found built-in ports: {found_ports}")
+            
+            # Remove duplicates and sort
+            possible_ports = sorted(list(set(all_ports)))
+            logger.info(f"📋 Total available ports: {possible_ports}")
+            
         elif os.name == 'nt':  # Windows
-            # On Windows, try to detect COM ports
-            import serial.tools.list_ports
-            available_ports = [port.device for port in serial.tools.list_ports.comports()]
-            possible_ports = available_ports + possible_ports
+            try:
+                import serial.tools.list_ports
+                available_ports = [port.device for port in serial.tools.list_ports.comports()]
+                possible_ports = available_ports
+                logger.info(f"📋 Windows COM ports: {possible_ports}")
+            except ImportError:
+                possible_ports = ["COM1", "COM2", "COM3", "COM4", "COM5", "COM6", "COM7", "COM8"]
+                logger.info(f"📋 Using default COM ports: {possible_ports}")
+        else:
+            # Fallback for other systems
+            possible_ports = [
+                "/dev/ttyUSB0", "/dev/ttyUSB1", "/dev/ttyUSB2", "/dev/ttyUSB3",
+                "/dev/ttyACM0", "/dev/ttyACM1", "/dev/ttyACM2", "/dev/ttyACM3",
+                "/dev/ttyS0", "/dev/ttyS1", "/dev/ttyS2", "/dev/ttyS3"
+            ]
+            logger.info(f"📋 Using fallback ports: {possible_ports}")
         
-        logger.info(f"Checking {len(possible_ports)} possible ports...")
+        if not possible_ports:
+            logger.warning("⚠️  No serial ports found! Check your AS608 connection.")
+            return FINGERPRINT_PORT
+        
+        logger.info(f"🔍 Testing {len(possible_ports)} ports for AS608 sensor...")
         
         for port in possible_ports:
             if not os.path.exists(port):
+                logger.debug(f"  Port {port} does not exist, skipping")
                 continue
                 
             try:
-                logger.info(f"Testing port: {port}")
+                logger.info(f"🔌 Testing port: {port}")
                 
                 # Try to connect to the port
-                test_uart = serial.Serial(port, baudrate=BAUD_RATE, timeout=1)
+                test_uart = serial.Serial(port, baudrate=BAUD_RATE, timeout=2)
                 time.sleep(0.5)
                 
                 # Try to create fingerprint object
@@ -137,21 +167,48 @@ class SimpleFingerprintClient:
                 result = test_finger.read_templates()
                 
                 if result == adafruit_fingerprint.OK:
-                    logger.info(f"✓ AS608 fingerprint sensor found on {port}!")
-                    logger.info(f"  Templates: {test_finger.template_count}")
+                    logger.info(f"✅ AS608 fingerprint sensor found on {port}!")
+                    logger.info(f"   📊 Templates: {test_finger.template_count}")
                     test_uart.close()
                     return port
                 else:
-                    logger.debug(f"  Not an AS608 sensor on {port}")
+                    logger.debug(f"   ❌ Not an AS608 sensor on {port} (result: {result})")
                     test_uart.close()
                     
+            except serial.SerialException as e:
+                logger.debug(f"   ❌ Serial error on {port}: {e}")
+                continue
             except Exception as e:
-                logger.debug(f"  Port {port} failed: {e}")
+                logger.debug(f"   ❌ General error on {port}: {e}")
                 continue
         
         # If auto-detection fails, use the configured port
         logger.warning(f"⚠️  Auto-detection failed, using configured port: {FINGERPRINT_PORT}")
+        logger.warning("💡 Make sure your AS608 sensor is connected and powered on")
+        logger.warning("💡 You can also manually set the port in config.py")
+        
+        # List available ports for debugging
+        self.list_available_ports()
+        
         return FINGERPRINT_PORT
+    
+    def list_available_ports(self):
+        """List all available serial ports for debugging"""
+        logger.info("🔍 Available serial ports:")
+        if os.name == 'posix':  # Linux/Unix
+            import glob
+            patterns = ['/dev/ttyUSB*', '/dev/ttyACM*', '/dev/ttyS*', '/dev/ttyAMA*']
+            for pattern in patterns:
+                ports = glob.glob(pattern)
+                if ports:
+                    logger.info(f"  {pattern}: {ports}")
+        elif os.name == 'nt':  # Windows
+            try:
+                import serial.tools.list_ports
+                ports = [port.device for port in serial.tools.list_ports.comports()]
+                logger.info(f"  COM ports: {ports}")
+            except ImportError:
+                logger.info("  serial.tools.list_ports not available")
     
     def connect_sensor(self, retries=3):
         """Connect to AS608 fingerprint sensor"""
