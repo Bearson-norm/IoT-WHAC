@@ -39,6 +39,7 @@ class SimpleFingerprintClient:
         self.connected = False
         self.last_scan_time = 0
         self.running = True
+        self.enrolling = False  # Flag to pause scanning during enrollment
         self.command_lock = threading.Lock()
         self.db_file = "fingerprints.db"
         self.init_database()
@@ -494,34 +495,47 @@ class SimpleFingerprintClient:
                     logger.error("Missing fingerprint_id or user_name in add user command")
                     return
                 
-                # Enroll fingerprint
-                if self.enroll_fingerprint(fingerprint_id):
-                    # Save to database
-                    conn = sqlite3.connect(self.db_file)
-                    cursor = conn.cursor()
-                    cursor.execute('''
-                        INSERT OR REPLACE INTO users (fingerprint_id, user_name)
-                        VALUES (?, ?)
-                    ''', (fingerprint_id, user_name))
-                    conn.commit()
-                    conn.close()
-                    
-                    logger.info(f"✓ User added: {user_name} (ID: {fingerprint_id})")
-                    
-                    # Send confirmation
-                    self.send_command_response("add_user", "success", {
-                        "fingerprint_id": fingerprint_id,
-                        "user_name": user_name,
-                        "message": "User added successfully"
-                    })
-                else:
-                    logger.error(f"✗ Failed to enroll fingerprint for user: {user_name}")
-                    self.send_command_response("add_user", "error", {
-                        "message": "Failed to enroll fingerprint"
-                    })
+                # Set enrolling flag to pause scanning
+                self.enrolling = True
+                logger.info("⏸️  Pausing fingerprint scanning during enrollment...")
+                
+                # Wait a moment for scanning loop to stop
+                time.sleep(0.5)
+                
+                try:
+                    # Enroll fingerprint
+                    if self.enroll_fingerprint(fingerprint_id):
+                        # Save to database
+                        conn = sqlite3.connect(self.db_file)
+                        cursor = conn.cursor()
+                        cursor.execute('''
+                            INSERT OR REPLACE INTO users (fingerprint_id, user_name)
+                            VALUES (?, ?)
+                        ''', (fingerprint_id, user_name))
+                        conn.commit()
+                        conn.close()
+                        
+                        logger.info(f"✓ User added: {user_name} (ID: {fingerprint_id})")
+                        
+                        # Send confirmation
+                        self.send_command_response("add_user", "success", {
+                            "fingerprint_id": fingerprint_id,
+                            "user_name": user_name,
+                            "message": "User added successfully"
+                        })
+                    else:
+                        logger.error(f"✗ Failed to enroll fingerprint for user: {user_name}")
+                        self.send_command_response("add_user", "error", {
+                            "message": "Failed to enroll fingerprint"
+                        })
+                finally:
+                    # Always resume scanning after enrollment (success or failure)
+                    self.enrolling = False
+                    logger.info("▶️  Resuming fingerprint scanning...")
                     
         except Exception as e:
             logger.error(f"Error handling add user command: {e}")
+            self.enrolling = False  # Ensure flag is reset on error
             self.send_command_response("add_user", "error", {
                 "message": f"Error: {str(e)}"
             })
@@ -762,6 +776,10 @@ class SimpleFingerprintClient:
     def scan_fingerprint_standby(self):
         """Standby fingerprint scanning"""
         try:
+            # Skip scanning if enrollment is in progress
+            if self.enrolling:
+                return False
+            
             # Check if enough time has passed since last scan
             current_time = time.time()
             if current_time - self.last_scan_time < SCAN_INTERVAL:
