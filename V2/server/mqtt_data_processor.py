@@ -52,7 +52,8 @@ class MQTTDataProcessor:
     def setup_mqtt(self):
         """Setup MQTT client"""
         try:
-            self.mqtt_client = mqtt.Client()
+            # Use unique client ID to avoid conflicts with web UI
+            self.mqtt_client = mqtt.Client(client_id="whac_server_processor", clean_session=True)
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
             self.mqtt_client.on_message = self.on_mqtt_message
@@ -78,11 +79,12 @@ class MQTTDataProcessor:
         """MQTT connection callback"""
         if rc == 0:
             self.connected = True
-            logger.info("MQTT client connected")
-            client.subscribe(self.SCAN_TOPIC)
-            logger.info(f"Subscribed to {self.SCAN_TOPIC}")
+            logger.info("✅ Server processor MQTT client connected successfully")
+            client.subscribe(self.SCAN_TOPIC, qos=1)
+            logger.info(f"✅ Server processor subscribed to topic: {self.SCAN_TOPIC} (QoS 1)")
+            logger.info("🔔 Server processor is now listening for scan data...")
         else:
-            logger.error(f"MQTT connection failed with code {rc}")
+            logger.error(f"❌ Server processor MQTT connection failed with code {rc}")
             self.connected = False
     
     def on_mqtt_disconnect(self, client, userdata, rc):
@@ -93,14 +95,21 @@ class MQTTDataProcessor:
     def on_mqtt_message(self, client, userdata, msg):
         """Handle incoming MQTT scan messages"""
         try:
+            logger.info("=" * 80)
+            logger.info(f"📨 Server processor received MQTT message on topic: {msg.topic}")
+            logger.info(f"📦 Raw payload: {msg.payload.decode()}")
+            
             payload = json.loads(msg.payload.decode())
-            logger.info(f"Received scan data: {payload}")
+            logger.info(f"📋 Parsed JSON payload: {payload}")
             
             # Process the scan data
             self.process_scan_data(payload)
+            logger.info("=" * 80)
             
         except Exception as e:
-            logger.error(f"Error processing MQTT message: {e}")
+            logger.error(f"❌ Error processing MQTT message: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
     
     def process_scan_data(self, data):
         """Process fingerprint scan data"""

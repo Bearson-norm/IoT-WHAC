@@ -70,6 +70,17 @@
                     <i class="fas fa-store me-1"></i>
                     Store 001
                 </span>
+                <div class="btn-group ms-3" role="group">
+                    <button class="btn btn-sm btn-warning" onclick="testScanNotification()" title="Test Modal Popup">
+                        <i class="fas fa-vial me-1"></i>Test Modal
+                    </button>
+                    <button class="btn btn-sm btn-info" onclick="checkMQTTStatus()" title="Check MQTT Status">
+                        <i class="fas fa-network-wired me-1"></i>MQTT Status
+                    </button>
+                    <button class="btn btn-sm btn-success" onclick="simulateScan()" title="Simulate Real Scan">
+                        <i class="fas fa-fingerprint me-1"></i>Simulate Scan
+                    </button>
+                </div>
             </div>
         </div>
     </nav>
@@ -332,10 +343,10 @@
                     <p class="text-muted">Please decide whether to grant or deny access:</p>
                 </div>
                 <div class="modal-footer justify-content-center">
-                    <button type="button" class="btn btn-success btn-lg me-3" onclick="grantAccess()">
+                    <button type="button" class="btn btn-success btn-lg me-3" onclick="grantAccess()" id="grantBtn">
                         <i class="fas fa-check-circle me-2"></i>Grant Access
                     </button>
-                    <button type="button" class="btn btn-danger btn-lg" onclick="denyAccess()">
+                    <button type="button" class="btn btn-danger btn-lg" onclick="denyAccess()" id="denyBtn">
                         <i class="fas fa-times-circle me-2"></i>Deny Access
                     </button>
                 </div>
@@ -351,9 +362,17 @@
         let dailyScansChart, accessStatusChart;
         let socket;
         let currentScanData = null;
+        let scanModal = null; // Global modal instance
 
         // Initialize dashboard
         document.addEventListener('DOMContentLoaded', function() {
+            // Initialize the scan notification modal once
+            const modalElement = document.getElementById('scanNotificationModal');
+            if (modalElement) {
+                scanModal = new bootstrap.Modal(modalElement);
+                console.log('✅ Scan notification modal initialized');
+            }
+            
             // Initialize WebSocket connection
             initializeWebSocket();
             
@@ -392,17 +411,25 @@
             socket = io();
             
             socket.on('connect', function() {
-                console.log('Connected to WebSocket server');
+                console.log('✅ Connected to WebSocket server');
                 showNotification('Connected to WHAC Fingerprint System', 'success');
+                
+                // Update connection status
+                updateConnectionStatus(true);
             });
             
             socket.on('disconnect', function() {
-                console.log('Disconnected from WebSocket server');
+                console.log('❌ Disconnected from WebSocket server');
                 showNotification('Disconnected from server', 'warning');
+                
+                // Update connection status
+                updateConnectionStatus(false);
             });
             
             socket.on('scan_notification', function(data) {
-                console.log('Received scan notification:', data);
+                console.log('🔔 Received scan notification:', data);
+                console.log('📊 Data type:', typeof data);
+                console.log('📊 Data keys:', Object.keys(data));
                 showScanNotification(data);
             });
             
@@ -410,10 +437,10 @@
                 console.log('Action result:', data);
                 if (data.status === 'success') {
                     showNotification(data.message, 'success');
-                    // Close the modal
-                    const modal = bootstrap.Modal.getInstance(document.getElementById('scanNotificationModal'));
-                    if (modal) {
-                        modal.hide();
+                    // Close the modal using global instance
+                    if (scanModal) {
+                        scanModal.hide();
+                        console.log('✅ Modal hidden after action result');
                     }
                 } else {
                     showNotification(data.message, 'error');
@@ -423,7 +450,21 @@
 
         // Show scan notification popup
         function showScanNotification(data) {
+            console.log('🔔 showScanNotification called with data:', data);
             currentScanData = data;
+            
+            if (!scanModal) {
+                console.error('❌ Scan modal is not initialized!');
+                // Try to initialize it if not already done
+                const modalElement = document.getElementById('scanNotificationModal');
+                if (modalElement) {
+                    scanModal = new bootstrap.Modal(modalElement);
+                    console.log('✅ Scan modal initialized on-the-fly');
+                } else {
+                    console.error('❌ Modal element not found in DOM!');
+                    return;
+                }
+            }
             
             // Get user information
             let userInfo = 'Unknown User';
@@ -436,6 +477,8 @@
             } else {
                 userInfo = 'Unknown User (No Match)';
             }
+            
+            console.log('👤 User info:', userInfo);
             
             // Update modal content
             document.getElementById('scanUserInfo').textContent = userInfo;
@@ -455,9 +498,14 @@
                 `;
             }
             
-            // Show the modal
-            const modal = new bootstrap.Modal(document.getElementById('scanNotificationModal'));
-            modal.show();
+            console.log('📺 Showing modal...');
+            // Show the modal using the global instance
+            try {
+                scanModal.show();
+                console.log('✅ Modal shown successfully!');
+            } catch (error) {
+                console.error('❌ Error showing modal:', error);
+            }
             
             // Play notification sound (optional)
             playNotificationSound();
@@ -465,24 +513,147 @@
 
         // Grant access
         function grantAccess() {
-            if (!currentScanData) return;
+            if (!currentScanData) {
+                console.error('No current scan data available');
+                return;
+            }
+            
+            console.log('Granting access for:', currentScanData);
             
             socket.emit('grant_access', {
                 user_id: currentScanData.user_id,
                 action: currentScanData.status,
                 username: currentScanData.username
             });
+            
+            // Close the modal using global instance
+            if (scanModal) {
+                scanModal.hide();
+                console.log('✅ Modal hidden after granting access');
+            }
         }
 
         // Deny access
         function denyAccess() {
-            if (!currentScanData) return;
+            if (!currentScanData) {
+                console.error('No current scan data available');
+                return;
+            }
+            
+            console.log('Denying access for:', currentScanData);
             
             socket.emit('deny_access', {
                 user_id: currentScanData.user_id,
                 action: currentScanData.status,
                 username: currentScanData.username
             });
+            
+            // Close the modal using global instance
+            if (scanModal) {
+                scanModal.hide();
+                console.log('✅ Modal hidden after denying access');
+            }
+        }
+
+        // Test functions
+        function testScanNotification() {
+            console.log('🧪 Testing scan notification modal...');
+            const testData = {
+                user_id: 1,
+                status: 'Match',
+                username: 'Test User',
+                confidence: 85,
+                timestamp: new Date().toISOString(),
+                store_id: 'Store001',
+                device_id: 'AS608_001'
+            };
+            showScanNotification(testData);
+        }
+        
+        function testWebSocketConnection() {
+            if (socket && socket.connected) {
+                showNotification('WebSocket is connected!', 'success');
+                console.log('✅ WebSocket is connected');
+            } else {
+                showNotification('WebSocket is not connected!', 'error');
+                console.log('❌ WebSocket is NOT connected');
+            }
+        }
+        
+        async function checkMQTTStatus() {
+            try {
+                console.log('🔍 Checking MQTT status...');
+                const response = await fetch('/api/mqtt_status');
+                const data = await response.json();
+                
+                console.log('📊 MQTT Status:', data);
+                
+                let message = `MQTT Status:\n`;
+                message += `Connected: ${data.mqtt_connected ? '✅ Yes' : '❌ No'}\n`;
+                message += `Broker: ${data.mqtt_broker}:${data.mqtt_port}\n`;
+                message += `Topic: ${data.mqtt_topic}\n`;
+                message += `Client ID: ${data.mqtt_client_id}`;
+                
+                alert(message);
+                
+                if (data.mqtt_connected) {
+                    showNotification('MQTT is connected!', 'success');
+                } else {
+                    showNotification('MQTT is NOT connected!', 'error');
+                }
+            } catch (error) {
+                console.error('❌ Error checking MQTT status:', error);
+                showNotification('Error checking MQTT status', 'error');
+            }
+        }
+        
+        async function simulateScan() {
+            try {
+                console.log('🧪 Simulating fingerprint scan...');
+                const response = await fetch('/simulate_scan');
+                const data = await response.json();
+                
+                console.log('📋 Simulation response:', data);
+                
+                if (data.status === 'success') {
+                    showNotification('Simulated scan sent! Check if modal appears...', 'success');
+                } else {
+                    showNotification('Failed to simulate scan', 'error');
+                }
+            } catch (error) {
+                console.error('❌ Error simulating scan:', error);
+                showNotification('Error simulating scan', 'error');
+            }
+        }
+        
+        function clearNotifications() {
+            const container = document.getElementById('toast-container');
+            if (container) {
+                container.innerHTML = '';
+            }
+        }
+        
+        function updateConnectionStatus(connected) {
+            // Add connection status to the page
+            let statusElement = document.getElementById('websocket-status');
+            if (!statusElement) {
+                statusElement = document.createElement('div');
+                statusElement.id = 'websocket-status';
+                statusElement.style.cssText = 'position: fixed; top: 10px; right: 10px; padding: 10px; border-radius: 5px; z-index: 9999; font-weight: bold;';
+                document.body.appendChild(statusElement);
+            }
+            
+            if (connected) {
+                statusElement.textContent = '🟢 WebSocket Connected';
+                statusElement.style.backgroundColor = '#d4edda';
+                statusElement.style.color = '#155724';
+                statusElement.style.border = '1px solid #c3e6cb';
+            } else {
+                statusElement.textContent = '🔴 WebSocket Disconnected';
+                statusElement.style.backgroundColor = '#f8d7da';
+                statusElement.style.color = '#721c24';
+                statusElement.style.border = '1px solid #f5c6cb';
+            }
         }
 
         // Show notification toast

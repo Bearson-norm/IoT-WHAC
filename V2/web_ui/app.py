@@ -57,7 +57,8 @@ def setup_mqtt_client():
     """Setup MQTT client for receiving scan notifications"""
     global mqtt_client
     try:
-        mqtt_client = mqtt.Client()
+        # Use unique client ID to avoid conflicts with server processor
+        mqtt_client = mqtt.Client(client_id="whac_web_ui", clean_session=True)
         mqtt_client.on_connect = on_mqtt_connect
         mqtt_client.on_message = on_mqtt_message
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
@@ -69,23 +70,28 @@ def setup_mqtt_client():
 def on_mqtt_connect(client, userdata, flags, rc):
     """MQTT connection callback"""
     if rc == 0:
-        logger.info("MQTT client connected")
-        client.subscribe(MQTT_SCAN_TOPIC)
-        logger.info(f"Subscribed to {MQTT_SCAN_TOPIC}")
+        logger.info("✅ Web UI MQTT client connected successfully")
+        client.subscribe(MQTT_SCAN_TOPIC, qos=1)
+        logger.info(f"✅ Web UI subscribed to topic: {MQTT_SCAN_TOPIC} (QoS 1)")
+        logger.info("🔔 Web UI is now listening for scan notifications...")
     else:
-        logger.error(f"MQTT connection failed with code {rc}")
+        logger.error(f"❌ Web UI MQTT connection failed with code {rc}")
 
 def on_mqtt_message(client, userdata, msg):
     """Handle incoming MQTT scan messages"""
     try:
+        logger.info("=" * 80)
+        logger.info(f"📨 Web UI received MQTT message on topic: {msg.topic}")
+        logger.info(f"📦 Raw payload: {msg.payload.decode()}")
+        
         payload = json.loads(msg.payload.decode())
-        logger.info(f"Received scan notification: {payload}")
+        logger.info(f"📋 Parsed JSON payload: {payload}")
         
         # Process the scan data and log to database
         process_incoming_scan(payload)
         
         # Emit to all connected WebSocket clients
-        socketio.emit('scan_notification', {
+        scan_data = {
             'user_id': payload.get('fingerprint_id'),
             'status': payload.get('status'),
             'username': payload.get('username'),
@@ -93,10 +99,32 @@ def on_mqtt_message(client, userdata, msg):
             'timestamp': payload.get('timestamp'),
             'store_id': payload.get('store_id'),
             'device_id': payload.get('device_id')
-        })
+        }
+        
+        logger.info(f"🔄 Formatted scan data for WebSocket: {scan_data}")
+        
+        # Emit to WebSocket clients
+        try:
+            logger.info(f"🚀 Attempting to emit 'scan_notification' event to all WebSocket clients...")
+            socketio.emit('scan_notification', scan_data, namespace='/')
+            logger.info("✅ SUCCESS: Scan notification emitted to WebSocket!")
+            logger.info("=" * 80)
+        except Exception as emit_error:
+            logger.error(f"❌ ERROR emitting WebSocket message: {emit_error}")
+            logger.error(f"❌ Error type: {type(emit_error).__name__}")
+            # Try a simple emit without namespace
+            try:
+                logger.info("🔄 Trying fallback emit without namespace...")
+                socketio.emit('scan_notification', scan_data)
+                logger.info("✅ Fallback emit successful")
+            except Exception as fallback_error:
+                logger.error(f"❌ Fallback emit also failed: {fallback_error}")
         
     except Exception as e:
-        logger.error(f"Error processing MQTT message: {e}")
+        logger.error(f"❌ Error processing MQTT message: {e}")
+        logger.error(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
 def process_incoming_scan(data):
     """Process incoming scan data and log to database"""
@@ -194,13 +222,26 @@ def log_scan_to_database(store_id, fingerprint_id, timestamp, action, username, 
 @socketio.on('connect')
 def handle_connect():
     """Handle WebSocket connection"""
-    logger.info(f"Client connected: {request.sid}")
-    emit('status', {'message': 'Connected to WHAC Fingerprint System'})
+    logger.info("=" * 80)
+    logger.info(f"🔌 NEW WebSocket client connected!")
+    logger.info(f"   Session ID: {request.sid}")
+    logger.info(f"   Client IP: {request.remote_addr}")
+    try:
+        total_clients = len(socketio.server.manager.rooms.get('/', {}).get('', set()))
+        logger.info(f"   Total connected clients: {total_clients}")
+    except:
+        logger.info("   Total connected clients: Unable to determine")
+    logger.info("=" * 80)
+    emit('status', {'message': 'Connected to WHAC Fingerprint System', 'status': 'success'})
 
 @socketio.on('disconnect')
 def handle_disconnect():
     """Handle WebSocket disconnection"""
-    logger.info(f"Client disconnected: {request.sid}")
+    logger.info("=" * 80)
+    logger.info(f"🔌 WebSocket client disconnected!")
+    logger.info(f"   Session ID: {request.sid}")
+    logger.info(f"   Client IP: {request.remote_addr}")
+    logger.info("=" * 80)
 
 @socketio.on('grant_access')
 def handle_grant_access(data):
@@ -208,18 +249,29 @@ def handle_grant_access(data):
     try:
         user_id = data.get('user_id')
         action = data.get('action', 'access_granted')
+        username = data.get('username', 'Unknown')
+        
+        logger.info(f"Granting access for user {user_id} ({username})")
         
         # Send MQTT command to control relay
-        send_relay_command('grant', user_id, action)
+        success = send_relay_command('grant', user_id, action)
         
-        # Log to database
-        log_manual_action(user_id, action, 'granted')
-        
-        emit('action_result', {
-            'status': 'success',
-            'message': f'Access granted for user {user_id}',
-            'action': 'granted'
-        })
+        if success:
+            # Log to database
+            log_manual_action(user_id, action, 'granted')
+            
+            emit('action_result', {
+                'status': 'success',
+                'message': f'Access granted for {username} (ID: {user_id})',
+                'action': 'granted'
+            })
+            logger.info(f"✓ Access granted for user {user_id} ({username})")
+        else:
+            emit('action_result', {
+                'status': 'error',
+                'message': 'Failed to send relay command'
+            })
+            logger.error(f"✗ Failed to grant access for user {user_id}")
         
     except Exception as e:
         logger.error(f"Error granting access: {e}")
@@ -234,18 +286,29 @@ def handle_deny_access(data):
     try:
         user_id = data.get('user_id')
         action = data.get('action', 'access_denied')
+        username = data.get('username', 'Unknown')
+        
+        logger.info(f"Denying access for user {user_id} ({username})")
         
         # Send MQTT command to control relay
-        send_relay_command('deny', user_id, action)
+        success = send_relay_command('deny', user_id, action)
         
-        # Log to database
-        log_manual_action(user_id, action, 'denied')
-        
-        emit('action_result', {
-            'status': 'success',
-            'message': f'Access denied for user {user_id}',
-            'action': 'denied'
-        })
+        if success:
+            # Log to database
+            log_manual_action(user_id, action, 'denied')
+            
+            emit('action_result', {
+                'status': 'success',
+                'message': f'Access denied for {username} (ID: {user_id})',
+                'action': 'denied'
+            })
+            logger.info(f"✓ Access denied for user {user_id} ({username})")
+        else:
+            emit('action_result', {
+                'status': 'error',
+                'message': 'Failed to send relay command'
+            })
+            logger.error(f"✗ Failed to deny access for user {user_id}")
         
     except Exception as e:
         logger.error(f"Error denying access: {e}")
@@ -899,6 +962,103 @@ def reset_web_user_password(user_id):
     except Exception as e:
         logger.error(f"Error resetting web user password: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/test_websocket')
+@login_required
+def test_websocket():
+    """Test WebSocket connection"""
+    try:
+        test_data = {
+            'user_id': 999,
+            'status': 'Test',
+            'username': 'Test User',
+            'confidence': 100,
+            'timestamp': datetime.now().isoformat(),
+            'store_id': 'Store001',
+            'device_id': 'TEST_001'
+        }
+        
+        logger.info("=" * 80)
+        logger.info("🧪 TESTING WEBSOCKET CONNECTION")
+        logger.info(f"📋 Test data: {test_data}")
+        
+        # Emit test message
+        socketio.emit('scan_notification', test_data, namespace='/')
+        logger.info("✅ Test WebSocket message emitted")
+        logger.info("=" * 80)
+        
+        return jsonify({
+            'status': 'success', 
+            'message': 'Test WebSocket message sent',
+            'test_data': test_data
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error sending test WebSocket message: {e}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        return jsonify({'status': 'error', 'message': str(e)})
+
+@app.route('/api/mqtt_status')
+@login_required
+def mqtt_status():
+    """Check MQTT connection status"""
+    try:
+        status = {
+            'mqtt_connected': mqtt_client is not None and mqtt_client.is_connected() if hasattr(mqtt_client, 'is_connected') else False,
+            'mqtt_broker': MQTT_BROKER,
+            'mqtt_port': MQTT_PORT,
+            'mqtt_topic': MQTT_SCAN_TOPIC,
+            'mqtt_client_id': 'whac_web_ui',
+            'timestamp': datetime.now().isoformat()
+        }
+        
+        logger.info(f"📊 MQTT Status Check: {status}")
+        return jsonify(status)
+        
+    except Exception as e:
+        logger.error(f"❌ Error checking MQTT status: {e}")
+        return jsonify({
+            'error': str(e),
+            'mqtt_connected': False
+        })
+
+@app.route('/simulate_scan')
+@login_required
+def simulate_scan():
+    """Simulate a real fingerprint scan"""
+    try:
+        # Simulate the exact same data that comes from MQTT
+        scan_data = {
+            'user_id': 1,
+            'status': 'Match',
+            'username': 'Test User',
+            'confidence': 85,
+            'timestamp': datetime.now().isoformat(),
+            'store_id': 'Store001',
+            'device_id': 'AS608_001'
+        }
+        
+        logger.info("=" * 80)
+        logger.info("🧪 SIMULATING SCAN NOTIFICATION")
+        logger.info(f"📋 Scan data: {scan_data}")
+        
+        # Emit simulated scan
+        socketio.emit('scan_notification', scan_data, namespace='/')
+        logger.info("✅ Simulated scan notification emitted to WebSocket")
+        logger.info("=" * 80)
+        
+        return jsonify({
+            'status': 'success', 
+            'message': 'Simulated scan notification sent',
+            'scan_data': scan_data
+        })
+        
+    except Exception as e:
+        logger.error(f"❌ Error simulating scan: {e}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        return jsonify({'status': 'error', 'message': str(e)})
 
 @app.route('/api/admin/fingerprint_users')
 @login_required
