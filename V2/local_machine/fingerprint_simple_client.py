@@ -47,8 +47,15 @@ class SimpleFingerprintClient:
         self.relay_pin = 18  # GPIO pin for relay
         self.setup_gpio()
         
-        # Auto-detect fingerprint sensor port
-        self.detected_port = self.auto_detect_fingerprint_port()
+        # Use configured port directly (skip auto-detection)
+        self.detected_port = FINGERPRINT_PORT
+        logger.info(f"🎯 Using configured port: {self.detected_port}")
+        
+        # Verify the port exists
+        if not os.path.exists(self.detected_port):
+            logger.warning(f"⚠️  Configured port {self.detected_port} does not exist!")
+            logger.info("🔍 Falling back to auto-detection...")
+            self.detected_port = self.auto_detect_fingerprint_port()
         
         # MQTT Topics
         self.SCAN_TOPIC = MQTT_TOPIC  # "WHAC/Store001/in" - for scan results
@@ -155,6 +162,12 @@ class SimpleFingerprintClient:
         if not possible_ports:
             logger.warning("⚠️  No serial ports found! Check your AS608 connection.")
             return FINGERPRINT_PORT
+        
+        # Prioritize the configured port if it exists
+        if FINGERPRINT_PORT in possible_ports:
+            possible_ports.remove(FINGERPRINT_PORT)
+            possible_ports.insert(0, FINGERPRINT_PORT)
+            logger.info(f"🎯 Prioritizing configured port: {FINGERPRINT_PORT}")
         
         logger.info(f"🔍 Testing {len(possible_ports)} ports for AS608 sensor...")
         
@@ -677,6 +690,12 @@ class SimpleFingerprintClient:
         """Enroll a new fingerprint at the specified location"""
         try:
             logger.info(f"Starting fingerprint enrollment at location {location}")
+            logger.info(f"Using sensor on port: {self.detected_port}")
+            
+            # Check if sensor is still connected
+            if not self.finger:
+                logger.error("❌ Fingerprint sensor not connected!")
+                return False
             
             # First scan
             logger.info("Place finger on sensor for first scan...")
@@ -688,6 +707,7 @@ class SimpleFingerprintClient:
                     continue
                 else:
                     logger.error(f"Error getting first image: {i}")
+                    logger.error("💡 Check sensor connection and try again")
                     return False
             
             logger.info("First image captured!")
