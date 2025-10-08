@@ -246,9 +246,25 @@ class SimpleFingerprintClient:
             try:
                 logger.info(f"Connecting to fingerprint sensor on {self.detected_port} (attempt {attempt + 1})")
                 self.uart = serial.Serial(self.detected_port, baudrate=BAUD_RATE, timeout=2)
-                time.sleep(0.5)  # Give sensor time to stabilize
+                time.sleep(2.0)  # Give sensor more time to stabilize
                 self.finger = adafruit_fingerprint.Adafruit_Fingerprint(self.uart)
                 logger.info("✓ Sensor connected successfully!")
+                
+                # Additional stabilization - test sensor responsiveness
+                logger.info("🔍 Testing sensor responsiveness...")
+                time.sleep(1.0)
+                
+                # Try a simple operation to verify sensor is ready
+                try:
+                    # This is a safe operation that doesn't require finger
+                    test_result = self.finger.get_image()
+                    if test_result == adafruit_fingerprint.NOFINGER:
+                        logger.info("✓ Sensor is responsive and ready!")
+                    else:
+                        logger.info(f"✓ Sensor responded (code: {test_result})")
+                except Exception as e:
+                    logger.warning(f"⚠️  Sensor test failed: {e}, but continuing...")
+                
                 return True
                     
             except Exception as e:
@@ -919,6 +935,11 @@ def main():
         logger.info("✓ Standby scanning active")
         logger.info("✓ MQTT commands can interrupt scanning")
         logger.info("=" * 70)
+        
+        # Wait a bit more before starting scanning to ensure sensor is fully ready
+        logger.info("⏳ Waiting for sensor to fully stabilize...")
+        time.sleep(3.0)
+        logger.info("🚀 Starting fingerprint scanning...")
         
         # Start standby scanning
         client.run_standby_scanning()
