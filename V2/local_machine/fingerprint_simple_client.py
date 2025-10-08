@@ -245,26 +245,22 @@ class SimpleFingerprintClient:
         for attempt in range(retries):
             try:
                 logger.info(f"Connecting to fingerprint sensor on {self.detected_port} (attempt {attempt + 1})")
+                
+                # Check if port is already in use
+                try:
+                    import subprocess
+                    result = subprocess.run(['lsof', self.detected_port], capture_output=True, text=True)
+                    if result.stdout:
+                        logger.warning(f"⚠️  Port {self.detected_port} is already in use:")
+                        logger.warning(f"   {result.stdout}")
+                        logger.info("💡 Try: sudo pkill -f python3")
+                except:
+                    pass  # lsof not available, continue anyway
+                
                 self.uart = serial.Serial(self.detected_port, baudrate=BAUD_RATE, timeout=2)
-                time.sleep(2.0)  # Give sensor more time to stabilize
+                time.sleep(0.5)  # Give sensor time to stabilize
                 self.finger = adafruit_fingerprint.Adafruit_Fingerprint(self.uart)
                 logger.info("✓ Sensor connected successfully!")
-                
-                # Additional stabilization - test sensor responsiveness
-                logger.info("🔍 Testing sensor responsiveness...")
-                time.sleep(1.0)
-                
-                # Try a simple operation to verify sensor is ready
-                try:
-                    # This is a safe operation that doesn't require finger
-                    test_result = self.finger.get_image()
-                    if test_result == adafruit_fingerprint.NOFINGER:
-                        logger.info("✓ Sensor is responsive and ready!")
-                    else:
-                        logger.info(f"✓ Sensor responded (code: {test_result})")
-                except Exception as e:
-                    logger.warning(f"⚠️  Sensor test failed: {e}, but continuing...")
-                
                 return True
                     
             except Exception as e:
@@ -936,9 +932,9 @@ def main():
         logger.info("✓ MQTT commands can interrupt scanning")
         logger.info("=" * 70)
         
-        # Wait a bit more before starting scanning to ensure sensor is fully ready
+        # Wait for sensor to fully stabilize before starting scanning
         logger.info("⏳ Waiting for sensor to fully stabilize...")
-        time.sleep(3.0)
+        time.sleep(5.0)
         logger.info("🚀 Starting fingerprint scanning...")
         
         # Start standby scanning

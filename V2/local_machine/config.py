@@ -19,7 +19,7 @@ BAUD_RATE = 57600
 CONFIDENCE_THRESHOLD = 50  # Minimum confidence for fingerprint match
 
 # Application Configuration
-SCAN_INTERVAL = 2  # Seconds between scans
+SCAN_INTERVAL = 5  # Seconds between scans
 LOG_LEVEL = "INFO"  # DEBUG, INFO, WARNING, ERROR
 LOG_FILE = "fingerprint_mqtt.log"
 
