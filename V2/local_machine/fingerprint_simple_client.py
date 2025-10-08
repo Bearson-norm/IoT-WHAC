@@ -277,7 +277,7 @@ class SimpleFingerprintClient:
         """Connect to MQTT broker"""
         try:
             logger.info(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}")
-            self.mqtt_client = mqtt.Client()
+            self.mqtt_client = mqtt.Client(client_id="whac_fingerprint_client")
             
             # Set up callbacks
             self.mqtt_client.on_connect = self.on_mqtt_connect
