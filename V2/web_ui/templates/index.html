@@ -323,31 +323,80 @@
     <div class="modal fade" id="scanNotificationModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
         <div class="modal-dialog modal-dialog-centered">
             <div class="modal-content">
-                <div class="modal-header bg-primary text-white">
+                <div class="modal-header bg-primary text-white" id="modalHeader">
                     <h5 class="modal-title">
                         <i class="fas fa-fingerprint me-2"></i>
-                        Fingerprint Scan Detected
+                        <span id="modalTitle">Fingerprint Scan Detected</span>
                     </h5>
                 </div>
                 <div class="modal-body text-center">
-                    <div class="mb-3">
-                        <i class="fas fa-user-circle fa-4x text-primary mb-3"></i>
+                    <!-- Known User View -->
+                    <div id="knownUserView">
+                        <div class="mb-3">
+                            <i class="fas fa-user-circle fa-4x text-primary mb-3"></i>
+                        </div>
+                        <h4 id="scanUserInfo">Loading user information...</h4>
+                        <p class="text-muted mb-3" id="scanTimestamp"></p>
+                        <div class="alert alert-info" id="scanDetails">
+                            <strong>Status:</strong> <span id="scanAction"></span><br>
+                            <strong>User ID:</strong> <span id="scanUserId"></span><br>
+                            <strong>Store:</strong> <span id="scanStoreId"></span>
+                        </div>
+                        <p class="text-muted">Please decide whether to grant or deny access:</p>
                     </div>
-                    <h4 id="scanUserInfo">Loading user information...</h4>
-                    <p class="text-muted mb-3" id="scanTimestamp"></p>
-                    <div class="alert alert-info" id="scanDetails">
-                        <strong>Action:</strong> <span id="scanAction"></span><br>
-                        <strong>User ID:</strong> <span id="scanUserId"></span><br>
-                        <strong>Store:</strong> <span id="scanStoreId"></span>
+                    
+                    <!-- Unknown User View (Add New User) -->
+                    <div id="unknownUserView" style="display: none;">
+                        <div class="mb-3">
+                            <i class="fas fa-user-plus fa-4x text-warning mb-3"></i>
+                        </div>
+                        <h4 class="text-warning">Unknown Fingerprint Detected</h4>
+                        <p class="text-muted mb-3" id="unknownTimestamp"></p>
+                        <div class="alert alert-warning">
+                            <i class="fas fa-exclamation-triangle me-2"></i>
+                            This fingerprint is not registered in the system.
+                        </div>
+                        
+                        <div class="text-start mt-4">
+                            <h5 class="mb-3">Add New User</h5>
+                            <form id="addUserFromScanForm">
+                                <div class="mb-3">
+                                    <label for="newUserId" class="form-label">User ID <span class="text-danger">*</span></label>
+                                    <input type="number" class="form-control" id="newUserId" required 
+                                           placeholder="Enter unique user ID (e.g., 2, 3, 4...)">
+                                    <small class="text-muted">This will be the fingerprint slot number</small>
+                                </div>
+                                <div class="mb-3">
+                                    <label for="newUsername" class="form-label">Username <span class="text-danger">*</span></label>
+                                    <input type="text" class="form-control" id="newUsername" required 
+                                           placeholder="Enter user's name">
+                                </div>
+                                <div class="alert alert-info">
+                                    <i class="fas fa-info-circle me-2"></i>
+                                    <strong>Next Steps:</strong> The user will be asked to scan their finger twice to enroll.
+                                </div>
+                            </form>
+                        </div>
                     </div>
-                    <p class="text-muted">Please decide whether to grant or deny access:</p>
                 </div>
-                <div class="modal-footer justify-content-center">
+                
+                <!-- Footer for Known User -->
+                <div class="modal-footer justify-content-center" id="knownUserFooter">
                     <button type="button" class="btn btn-success btn-lg me-3" onclick="grantAccess()" id="grantBtn">
                         <i class="fas fa-check-circle me-2"></i>Grant Access
                     </button>
                     <button type="button" class="btn btn-danger btn-lg" onclick="denyAccess()" id="denyBtn">
                         <i class="fas fa-times-circle me-2"></i>Deny Access
+                    </button>
+                </div>
+                
+                <!-- Footer for Unknown User -->
+                <div class="modal-footer justify-content-center" id="unknownUserFooter" style="display: none;">
+                    <button type="button" class="btn btn-primary btn-lg me-2" onclick="enrollNewUser()">
+                        <i class="fas fa-user-plus me-2"></i>Enroll User
+                    </button>
+                    <button type="button" class="btn btn-secondary btn-lg" onclick="dismissUnknownUser()">
+                        <i class="fas fa-times me-2"></i>Dismiss
                     </button>
                 </div>
             </div>
@@ -446,6 +495,19 @@
                     showNotification(data.message, 'error');
                 }
             });
+            
+            socket.on('enrollment_notification', function(data) {
+                console.log('📝 Enrollment notification:', data);
+                if (data.type === 'enrollment_success') {
+                    showNotification(data.message, 'success');
+                    // Refresh user list after successful enrollment
+                    if (typeof loadUsers === 'function') {
+                        setTimeout(loadUsers, 1000);
+                    }
+                } else if (data.type === 'enrollment_error') {
+                    showNotification(data.message, 'error');
+                }
+            });
         }
 
         // Show scan notification popup
@@ -455,7 +517,6 @@
             
             if (!scanModal) {
                 console.error('❌ Scan modal is not initialized!');
-                // Try to initialize it if not already done
                 const modalElement = document.getElementById('scanNotificationModal');
                 if (modalElement) {
                     scanModal = new bootstrap.Modal(modalElement);
@@ -466,49 +527,117 @@
                 }
             }
             
-            // Get user information
-            let userInfo = 'Unknown User';
-            if (data.status === 'Match' && data.user_id && data.user_id > 0) {
-                if (data.username) {
-                    userInfo = `${data.username} (ID: ${data.user_id})`;
-                } else {
-                    userInfo = `User ID: ${data.user_id}`;
-                }
+            // Check if this is a known or unknown user
+            const isKnownUser = data.status === 'Match' && data.user_id && data.user_id > 0;
+            
+            if (isKnownUser) {
+                // Show known user view
+                console.log('👤 Known user detected:', data.username || data.user_id);
+                showKnownUserView(data);
             } else {
-                userInfo = 'Unknown User (No Match)';
-            }
-            
-            console.log('👤 User info:', userInfo);
-            
-            // Update modal content
-            document.getElementById('scanUserInfo').textContent = userInfo;
-            document.getElementById('scanTimestamp').textContent = new Date(data.timestamp).toLocaleString();
-            document.getElementById('scanAction').textContent = data.status;
-            document.getElementById('scanUserId').textContent = data.user_id || 'N/A';
-            document.getElementById('scanStoreId').textContent = data.store_id || 'Store001';
-            
-            // Add confidence info if available
-            if (data.confidence) {
-                const details = document.getElementById('scanDetails');
-                details.innerHTML = `
-                    <strong>Status:</strong> <span id="scanAction">${data.status}</span><br>
-                    <strong>User ID:</strong> <span id="scanUserId">${data.user_id || 'N/A'}</span><br>
-                    <strong>Store:</strong> <span id="scanStoreId">${data.store_id || 'Store001'}</span><br>
-                    <strong>Confidence:</strong> ${data.confidence}%
-                `;
+                // Show unknown user view (add new user)
+                console.log('❓ Unknown user detected - showing add user form');
+                showUnknownUserView(data);
             }
             
             console.log('📺 Showing modal...');
-            // Show the modal using the global instance
             try {
                 scanModal.show();
                 console.log('✅ Modal shown successfully!');
+                playNotificationSound();
             } catch (error) {
                 console.error('❌ Error showing modal:', error);
             }
+        }
+        
+        function showKnownUserView(data) {
+            console.log('📋 showKnownUserView called with:', data);
             
-            // Play notification sound (optional)
-            playNotificationSound();
+            // Hide unknown user view, show known user view
+            document.getElementById('unknownUserView').style.display = 'none';
+            document.getElementById('unknownUserFooter').style.display = 'none';
+            document.getElementById('knownUserView').style.display = 'block';
+            document.getElementById('knownUserFooter').style.display = 'flex';
+            
+            // Update header
+            document.getElementById('modalHeader').className = 'modal-header bg-primary text-white';
+            document.getElementById('modalTitle').textContent = 'Fingerprint Scan Detected';
+            
+            // Get user information
+            let userInfo = data.username ? 
+                `${data.username} (ID: ${data.user_id})` : 
+                `User ID: ${data.user_id}`;
+            
+            console.log('📝 Updating known user elements...');
+            
+            // Update modal content with null checks
+            const scanUserInfo = document.getElementById('scanUserInfo');
+            const scanTimestamp = document.getElementById('scanTimestamp');
+            const scanDetails = document.getElementById('scanDetails');
+            
+            if (scanUserInfo) {
+                scanUserInfo.textContent = userInfo;
+            } else {
+                console.error('❌ scanUserInfo element not found!');
+            }
+            
+            if (scanTimestamp) {
+                scanTimestamp.textContent = new Date(data.timestamp).toLocaleString();
+            } else {
+                console.error('❌ scanTimestamp element not found!');
+            }
+            
+            // Build details HTML
+            let detailsHTML = `
+                <strong>Status:</strong> <span>${data.status}</span><br>
+                <strong>User ID:</strong> <span>${data.user_id || 'N/A'}</span><br>
+                <strong>Store:</strong> <span>${data.store_id || 'Store001'}</span>
+            `;
+            
+            // Add confidence if available
+            if (data.confidence) {
+                detailsHTML += `<br><strong>Confidence:</strong> ${data.confidence}%`;
+            }
+            
+            if (scanDetails) {
+                scanDetails.innerHTML = detailsHTML;
+            } else {
+                console.error('❌ scanDetails element not found!');
+            }
+            
+            console.log('✅ Known user view updated successfully');
+        }
+        
+        function showUnknownUserView(data) {
+            console.log('❓ showUnknownUserView called with:', data);
+            
+            // Hide known user view, show unknown user view
+            document.getElementById('knownUserView').style.display = 'none';
+            document.getElementById('knownUserFooter').style.display = 'none';
+            document.getElementById('unknownUserView').style.display = 'block';
+            document.getElementById('unknownUserFooter').style.display = 'flex';
+            
+            // Update header
+            document.getElementById('modalHeader').className = 'modal-header bg-warning text-dark';
+            document.getElementById('modalTitle').textContent = 'Unknown Fingerprint';
+            
+            // Update timestamp with null check
+            const unknownTimestamp = document.getElementById('unknownTimestamp');
+            if (unknownTimestamp) {
+                unknownTimestamp.textContent = new Date(data.timestamp).toLocaleString();
+            } else {
+                console.error('❌ unknownTimestamp element not found!');
+            }
+            
+            // Clear form with null check
+            const form = document.getElementById('addUserFromScanForm');
+            if (form) {
+                form.reset();
+            } else {
+                console.error('❌ addUserFromScanForm element not found!');
+            }
+            
+            console.log('✅ Unknown user view updated successfully');
         }
 
         // Grant access
@@ -552,6 +681,64 @@
             if (scanModal) {
                 scanModal.hide();
                 console.log('✅ Modal hidden after denying access');
+            }
+        }
+        
+        // Enroll new user from unknown fingerprint
+        async function enrollNewUser() {
+            const userId = document.getElementById('newUserId').value;
+            const username = document.getElementById('newUsername').value;
+            
+            if (!userId || !username) {
+                alert('Please fill in all required fields');
+                return;
+            }
+            
+            console.log('📝 Enrolling new user:', {userId, username});
+            
+            try {
+                // Send enrollment request to server
+                const response = await fetch('/api/enroll_user', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        user_id: parseInt(userId),
+                        username: username
+                    })
+                });
+                
+                const data = await response.json();
+                
+                if (response.ok) {
+                    showNotification(`Enrollment started for ${username}. Please follow instructions on the local machine.`, 'success');
+                    
+                    // Close modal
+                    if (scanModal) {
+                        scanModal.hide();
+                    }
+                    
+                    // Refresh user list
+                    setTimeout(() => {
+                        if (typeof loadUsers === 'function') {
+                            loadUsers();
+                        }
+                    }, 2000);
+                } else {
+                    showNotification(`Error: ${data.error || 'Failed to start enrollment'}`, 'error');
+                }
+            } catch (error) {
+                console.error('❌ Error enrolling user:', error);
+                showNotification('Error enrolling user', 'error');
+            }
+        }
+        
+        // Dismiss unknown user modal
+        function dismissUnknownUser() {
+            console.log('Dismissing unknown user modal');
+            if (scanModal) {
+                scanModal.hide();
             }
         }
 

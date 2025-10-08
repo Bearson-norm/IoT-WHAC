@@ -24,7 +24,14 @@ logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
 app.config['SECRET_KEY'] = 'whac_fingerprint_secret_key'
-socketio = SocketIO(app, cors_allowed_origins="*")
+
+# Initialize SocketIO with explicit async_mode for thread compatibility
+# async_mode='threading' is required for MQTT background thread communication
+socketio = SocketIO(app, 
+                    cors_allowed_origins="*",
+                    async_mode='threading',
+                    logger=False,
+                    engineio_logger=False)
 
 # Database configuration
 DB_CONFIG = {
@@ -71,14 +78,67 @@ def on_mqtt_connect(client, userdata, flags, rc):
     """MQTT connection callback"""
     if rc == 0:
         logger.info("✅ Web UI MQTT client connected successfully")
+        
+        # Subscribe to scan notifications
         client.subscribe(MQTT_SCAN_TOPIC, qos=1)
         logger.info(f"✅ Web UI subscribed to topic: {MQTT_SCAN_TOPIC} (QoS 1)")
-        logger.info("🔔 Web UI is now listening for scan notifications...")
+        
+        # Subscribe to enrollment responses
+        client.subscribe("WHAC/Store001/add_user_response", qos=1)
+        logger.info(f"✅ Web UI subscribed to topic: WHAC/Store001/add_user_response (QoS 1)")
+        
+        logger.info("🔔 Web UI is now listening for scan notifications and enrollment responses...")
     else:
         logger.error(f"❌ Web UI MQTT connection failed with code {rc}")
 
+def emit_scan_notification_task(scan_data):
+    """Background task to emit scan notification via WebSocket"""
+    try:
+        logger.info("=" * 80)
+        logger.info(f"🎯 BACKGROUND TASK STARTED - SCAN NOTIFICATION")
+        logger.info(f"📊 Thread: {threading.current_thread().name}")
+        logger.info(f"📊 Thread ID: {threading.current_thread().ident}")
+        logger.info(f"📦 Scan data to emit: {scan_data}")
+        
+        # Sleep briefly to ensure task is running in proper context
+        socketio.sleep(0.01)
+        
+        # Emit from background task context
+        logger.info("🚀 Calling socketio.emit() now...")
+        socketio.emit('scan_notification', scan_data, namespace='/')
+        logger.info("✅ socketio.emit() call completed!")
+        
+        # Force flush
+        socketio.sleep(0.01)
+        logger.info("✅ BACKGROUND TASK COMPLETED SUCCESSFULLY!")
+        logger.info("=" * 80)
+        
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error(f"❌ BACKGROUND TASK ERROR: {e}")
+        logger.error(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Full traceback:\n{traceback.format_exc()}")
+        logger.error("=" * 80)
+
+def emit_notification_task(notification_data):
+    """Background task to emit general notifications via WebSocket"""
+    try:
+        logger.info(f"🎯 BACKGROUND TASK - NOTIFICATION: {notification_data.get('type')}")
+        
+        socketio.sleep(0.01)
+        socketio.emit('enrollment_notification', notification_data, namespace='/')
+        socketio.sleep(0.01)
+        
+        logger.info("✅ Notification emitted successfully!")
+        
+    except Exception as e:
+        logger.error(f"❌ Error emitting notification: {e}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
 def on_mqtt_message(client, userdata, msg):
-    """Handle incoming MQTT scan messages"""
+    """Handle incoming MQTT messages"""
     try:
         logger.info("=" * 80)
         logger.info(f"📨 Web UI received MQTT message on topic: {msg.topic}")
@@ -87,10 +147,31 @@ def on_mqtt_message(client, userdata, msg):
         payload = json.loads(msg.payload.decode())
         logger.info(f"📋 Parsed JSON payload: {payload}")
         
+        # Route to appropriate handler based on topic
+        if msg.topic == MQTT_SCAN_TOPIC:
+            # Handle scan notifications
+            handle_scan_message(payload)
+        elif msg.topic == "WHAC/Store001/add_user_response":
+            # Handle enrollment responses
+            handle_enrollment_response(payload)
+        else:
+            logger.warning(f"⚠️  Unknown topic: {msg.topic}")
+        
+        logger.info("=" * 80)
+        
+    except Exception as e:
+        logger.error(f"❌ Error processing MQTT message: {e}")
+        logger.error(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
+def handle_scan_message(payload):
+    """Handle fingerprint scan messages"""
+    try:
         # Process the scan data and log to database
         process_incoming_scan(payload)
         
-        # Emit to all connected WebSocket clients
+        # Format scan data for WebSocket
         scan_data = {
             'user_id': payload.get('fingerprint_id'),
             'status': payload.get('status'),
@@ -102,27 +183,74 @@ def on_mqtt_message(client, userdata, msg):
         }
         
         logger.info(f"🔄 Formatted scan data for WebSocket: {scan_data}")
+        logger.info(f"📊 MQTT Thread: {threading.current_thread().name}")
         
-        # Emit to WebSocket clients
-        try:
-            logger.info(f"🚀 Attempting to emit 'scan_notification' event to all WebSocket clients...")
-            socketio.emit('scan_notification', scan_data, namespace='/')
-            logger.info("✅ SUCCESS: Scan notification emitted to WebSocket!")
-            logger.info("=" * 80)
-        except Exception as emit_error:
-            logger.error(f"❌ ERROR emitting WebSocket message: {emit_error}")
-            logger.error(f"❌ Error type: {type(emit_error).__name__}")
-            # Try a simple emit without namespace
-            try:
-                logger.info("🔄 Trying fallback emit without namespace...")
-                socketio.emit('scan_notification', scan_data)
-                logger.info("✅ Fallback emit successful")
-            except Exception as fallback_error:
-                logger.error(f"❌ Fallback emit also failed: {fallback_error}")
+        # Use SocketIO background task to emit from MQTT thread
+        logger.info("🚀 Starting background task to emit WebSocket event...")
+        socketio.start_background_task(emit_scan_notification_task, scan_data)
+        logger.info("✅ Background task started successfully!")
         
     except Exception as e:
-        logger.error(f"❌ Error processing MQTT message: {e}")
-        logger.error(f"❌ Error type: {type(e).__name__}")
+        logger.error(f"❌ Error handling scan message: {e}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
+def handle_enrollment_response(payload):
+    """Handle enrollment response from local machine"""
+    try:
+        logger.info("📥 ENROLLMENT RESPONSE RECEIVED")
+        logger.info(f"   Status: {payload.get('status')}")
+        logger.info(f"   Message: {payload.get('data', {}).get('message')}")
+        
+        status = payload.get('status')
+        data = payload.get('data', {})
+        fingerprint_id = data.get('fingerprint_id')
+        user_name = data.get('user_name')
+        
+        if status == 'success' and fingerprint_id and user_name:
+            # Add user to PostgreSQL database
+            conn = get_db_connection()
+            if conn:
+                try:
+                    cursor = conn.cursor()
+                    cursor.execute("""
+                        INSERT INTO store_001 (user_id, username, finger_template_id)
+                        VALUES (%s, %s, %s)
+                        ON CONFLICT (user_id) DO UPDATE SET
+                            username = EXCLUDED.username,
+                            finger_template_id = EXCLUDED.finger_template_id,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (fingerprint_id, user_name, fingerprint_id))
+                    
+                    conn.commit()
+                    conn.close()
+                    
+                    logger.info(f"✅ User added to PostgreSQL database: {user_name} (ID: {fingerprint_id})")
+                    
+                    # Emit success notification to web UI
+                    notification_data = {
+                        'type': 'enrollment_success',
+                        'message': f'User {user_name} enrolled successfully!',
+                        'user_id': fingerprint_id,
+                        'username': user_name
+                    }
+                    socketio.start_background_task(emit_notification_task, notification_data)
+                    
+                except Exception as db_error:
+                    logger.error(f"❌ Error adding user to database: {db_error}")
+                    conn.rollback()
+                    conn.close()
+        else:
+            logger.error(f"❌ Enrollment failed: {data.get('message', 'Unknown error')}")
+            # Emit error notification to web UI
+            notification_data = {
+                'type': 'enrollment_error',
+                'message': data.get('message', 'Enrollment failed')
+            }
+            socketio.start_background_task(emit_notification_task, notification_data)
+        
+    except Exception as e:
+        logger.error(f"❌ Error handling enrollment response: {e}")
         import traceback
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
@@ -981,6 +1109,7 @@ def test_websocket():
         logger.info("=" * 80)
         logger.info("🧪 TESTING WEBSOCKET CONNECTION")
         logger.info(f"📋 Test data: {test_data}")
+        logger.info(f"📊 Thread info: {threading.current_thread().name}")
         
         # Emit test message
         socketio.emit('scan_notification', test_data, namespace='/')
@@ -1042,6 +1171,7 @@ def simulate_scan():
         logger.info("=" * 80)
         logger.info("🧪 SIMULATING SCAN NOTIFICATION")
         logger.info(f"📋 Scan data: {scan_data}")
+        logger.info(f"📊 Thread info: {threading.current_thread().name}")
         
         # Emit simulated scan
         socketio.emit('scan_notification', scan_data, namespace='/')
@@ -1513,9 +1643,132 @@ def delete_user(user_id):
         logger.error(f"Error deleting user: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/enroll_user', methods=['POST'])
+@login_required
+def enroll_user():
+    """Send enrollment command to local machine via MQTT"""
+    try:
+        logger.info("=" * 80)
+        logger.info("📝 ENROLLMENT REQUEST RECEIVED")
+        
+        # Get request data
+        data = request.get_json()
+        if not data:
+            logger.error("❌ No JSON data in request")
+            return jsonify({'error': 'No data provided'}), 400
+        
+        logger.info(f"📦 Request data: {data}")
+        
+        user_id = data.get('user_id')
+        username = data.get('username')
+        
+        logger.info(f"   User ID: {user_id} (type: {type(user_id)})")
+        logger.info(f"   Username: {username} (type: {type(username)})")
+        logger.info(f"   Requested by: {session.get('username', 'Unknown')}")
+        
+        if not user_id or not username:
+            logger.error(f"❌ Missing required fields: user_id={user_id}, username={username}")
+            return jsonify({'error': 'User ID and username are required'}), 400
+        
+        # Check if user_id already exists in database
+        logger.info("🔍 Checking if user ID already exists...")
+        try:
+            conn = get_db_connection()
+            if conn:
+                cursor = conn.cursor()
+                cursor.execute("SELECT user_id FROM store_001 WHERE user_id = %s", (user_id,))
+                existing_user = cursor.fetchone()
+                conn.close()
+                
+                if existing_user:
+                    logger.warning(f"⚠️  User ID {user_id} already exists in database")
+                    return jsonify({'error': f'User ID {user_id} already exists'}), 400
+                else:
+                    logger.info(f"✅ User ID {user_id} is available")
+            else:
+                logger.warning("⚠️  Could not connect to database, skipping duplicate check")
+        except Exception as db_error:
+            logger.error(f"❌ Database check error: {db_error}")
+            # Continue anyway - better to try enrollment than fail here
+        
+        # Check MQTT client
+        logger.info("🔍 Checking MQTT client...")
+        if mqtt_client is None:
+            logger.error("❌ MQTT client is None")
+            return jsonify({'error': 'MQTT client not initialized'}), 500
+        
+        logger.info(f"✅ MQTT client available: {type(mqtt_client)}")
+        
+        # Prepare enrollment command
+        enrollment_command = {
+            'fingerprint_id': int(user_id),  # Ensure it's an integer
+            'user_name': str(username),      # Ensure it's a string
+            'timestamp': datetime.now().isoformat(),
+            'source': 'web_ui',
+            'requested_by': session.get('username', 'admin')
+        }
+        
+        logger.info(f"📤 Sending enrollment command to MQTT topic: WHAC/Store001/add_user")
+        logger.info(f"📦 Payload: {enrollment_command}")
+        
+        # Publish to MQTT
+        try:
+            result = mqtt_client.publish(
+                'WHAC/Store001/add_user',
+                json.dumps(enrollment_command),
+                qos=1
+            )
+            
+            logger.info(f"📡 MQTT publish result: rc={result.rc}, mid={result.mid}")
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info("✅ Enrollment command sent successfully!")
+                logger.info("⏳ Waiting for local machine to complete enrollment...")
+                logger.info("=" * 80)
+                
+                return jsonify({
+                    'message': 'Enrollment command sent. Please follow instructions on the fingerprint scanner.',
+                    'user_id': user_id,
+                    'username': username,
+                    'status': 'enrollment_started'
+                }), 200
+            else:
+                logger.error(f"❌ Failed to send enrollment command (rc: {result.rc})")
+                return jsonify({'error': f'MQTT publish failed (rc: {result.rc})'}), 500
+                
+        except Exception as mqtt_error:
+            logger.error(f"❌ MQTT publish exception: {mqtt_error}")
+            import traceback
+            logger.error(f"❌ MQTT Traceback: {traceback.format_exc()}")
+            return jsonify({'error': f'MQTT error: {str(mqtt_error)}'}), 500
+        
+    except Exception as e:
+        logger.error("=" * 80)
+        logger.error(f"❌ FATAL ERROR in enroll_user: {e}")
+        logger.error(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Full Traceback:\n{traceback.format_exc()}")
+        logger.error("=" * 80)
+        return jsonify({'error': f'Server error: {str(e)}'}), 500
+
 if __name__ == '__main__':
+    logger.info("=" * 80)
+    logger.info("🚀 STARTING WHAC WEB UI")
+    logger.info("=" * 80)
+    logger.info(f"📊 SocketIO async_mode: {socketio.async_mode}")
+    logger.info(f"🌐 CORS: Enabled for all origins")
+    logger.info(f"🔧 Debug mode: True")
+    logger.info(f"🌍 Host: 0.0.0.0 (all interfaces)")
+    logger.info(f"🔌 Port: 5000")
+    logger.info("=" * 80)
+    
     # Setup MQTT client for real-time notifications
     setup_mqtt_client()
+    
+    logger.info("=" * 80)
+    logger.info("✅ MQTT client setup complete")
+    logger.info("🎯 Starting Flask-SocketIO server...")
+    logger.info("=" * 80)
     
     # Run the application with SocketIO
     socketio.run(app, debug=True, host='0.0.0.0', port=5000)
