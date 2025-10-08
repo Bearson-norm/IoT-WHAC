@@ -242,27 +242,38 @@ class SimpleFingerprintClient:
     
     def connect_sensor(self, retries=3):
         """Connect to AS608 fingerprint sensor"""
+        # Try different baud rates if the default fails
+        baud_rates = [BAUD_RATE, 9600, 19200, 38400, 115200]
+        
         for attempt in range(retries):
-            try:
-                logger.info(f"Connecting to fingerprint sensor on {self.detected_port} (attempt {attempt + 1})")
-                self.uart = serial.Serial(self.detected_port, baudrate=BAUD_RATE, timeout=2)
-                time.sleep(0.5)
-                self.finger = adafruit_fingerprint.Adafruit_Fingerprint(self.uart)
-                
-                if self.finger.read_templates() == adafruit_fingerprint.OK:
-                    logger.info(f"✓ Sensor connected! Templates: {self.finger.template_count}")
-                    return True
-                else:
-                    raise Exception("Failed to read templates from sensor")
+            for baud_rate in baud_rates:
+                try:
+                    logger.info(f"Connecting to fingerprint sensor on {self.detected_port} (attempt {attempt + 1}, baud: {baud_rate})")
+                    self.uart = serial.Serial(self.detected_port, baudrate=baud_rate, timeout=2)
+                    time.sleep(0.5)
+                    self.finger = adafruit_fingerprint.Adafruit_Fingerprint(self.uart)
                     
-            except Exception as e:
-                logger.error(f"Connection attempt {attempt + 1} failed: {e}")
-                if self.uart:
-                    self.uart.close()
-                if attempt < retries - 1:
-                    time.sleep(2)
-                else:
-                    raise
+                    result = self.finger.read_templates()
+                    if result == adafruit_fingerprint.OK:
+                        logger.info(f"✓ Sensor connected! Templates: {self.finger.template_count} (baud: {baud_rate})")
+                        return True
+                    else:
+                        logger.warning(f"⚠️  Could not read templates (result: {result}) at baud {baud_rate}")
+                        self.uart.close()
+                        continue
+                        
+                except Exception as e:
+                    logger.debug(f"Connection failed at baud {baud_rate}: {e}")
+                    if self.uart:
+                        self.uart.close()
+                    continue
+            
+            # If all baud rates failed, wait before retry
+            if attempt < retries - 1:
+                logger.info(f"All baud rates failed, retrying in 2 seconds...")
+                time.sleep(2)
+        
+        logger.error("Failed to connect to fingerprint sensor with any baud rate")
         return False
     
     def connect_mqtt(self):
@@ -889,11 +900,8 @@ def main():
             logger.error("Failed to connect to MQTT broker")
             return 1
         
-        # Show initial status
-        if client.finger.read_templates() == adafruit_fingerprint.OK:
-            template_count = client.finger.template_count
-        else:
-            template_count = 0
+        # Show initial status (templates already read during connection)
+        template_count = client.finger.template_count
         
         logger.info("=" * 70)
         logger.info("SIMPLE FINGERPRINT MQTT CLIENT - Ready!")
