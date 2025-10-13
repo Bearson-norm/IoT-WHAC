@@ -608,7 +608,7 @@
             console.log('✅ Known user view updated successfully');
         }
         
-        function showUnknownUserView(data) {
+        async function showUnknownUserView(data) {
             console.log('❓ showUnknownUserView called with:', data);
             
             // Hide known user view, show unknown user view
@@ -620,6 +620,21 @@
             // Update header
             document.getElementById('modalHeader').className = 'modal-header bg-warning text-dark';
             document.getElementById('modalTitle').textContent = 'Unknown Fingerprint';
+            
+            // Try to get next available User ID
+            try {
+                const response = await fetch('/api/next_user_id');
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.next_id) {
+                        document.getElementById('newUserId').value = data.next_id;
+                        document.getElementById('newUserId').placeholder = `Suggested: ${data.next_id}`;
+                    }
+                }
+            } catch (error) {
+                console.log('Could not fetch next user ID:', error);
+                // Not critical, just leave field empty
+            }
             
             // Update timestamp with null check
             const unknownTimestamp = document.getElementById('unknownTimestamp');
@@ -690,11 +705,18 @@
             const username = document.getElementById('newUsername').value;
             
             if (!userId || !username) {
-                alert('Please fill in all required fields');
+                showNotification('Please fill in all required fields', 'error');
                 return;
             }
             
-            console.log('📝 Enrolling new user:', {userId, username});
+            // Validate user ID is a positive number
+            const userIdInt = parseInt(userId);
+            if (isNaN(userIdInt) || userIdInt <= 0) {
+                showNotification('User ID must be a positive number', 'error');
+                return;
+            }
+            
+            console.log('📝 Enrolling new user:', {userId: userIdInt, username});
             
             try {
                 // Send enrollment request to server
@@ -704,7 +726,7 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        user_id: parseInt(userId),
+                        user_id: userIdInt,
                         username: username
                     })
                 });
@@ -726,7 +748,13 @@
                         }
                     }, 2000);
                 } else {
-                    showNotification(`Error: ${data.error || 'Failed to start enrollment'}`, 'error');
+                    // Show detailed error message
+                    const errorMsg = data.error || 'Failed to start enrollment';
+                    console.error('❌ Enrollment error:', data);
+                    if (data.debug) {
+                        console.error('🐛 Debug info:', data.debug);
+                    }
+                    showNotification(`Error: ${errorMsg}`, 'error');
                 }
             } catch (error) {
                 console.error('❌ Error enrolling user:', error);

@@ -397,15 +397,52 @@ def handle_grant_access(data):
         else:
             emit('action_result', {
                 'status': 'error',
-                'message': 'Failed to send relay command'
+                'message': 'Failed to send relay command - Check MQTT connection to Raspberry Pi'
             })
-            logger.error(f"✗ Failed to grant access for user {user_id}")
+            logger.error(f"✗ Failed to grant access for user {user_id} - MQTT relay command failed")
         
     except Exception as e:
         logger.error(f"Error granting access: {e}")
         emit('action_result', {
             'status': 'error',
             'message': str(e)
+        })
+
+@socketio.on('check_mqtt_status')
+def handle_check_mqtt_status():
+    """Check MQTT connection status"""
+    try:
+        if not mqtt_client:
+            emit('mqtt_status', {
+                'status': 'error',
+                'message': 'MQTT client not initialized',
+                'connected': False
+            })
+            return
+        
+        is_connected = mqtt_client.is_connected()
+        if is_connected:
+            emit('mqtt_status', {
+                'status': 'success',
+                'message': 'MQTT client connected to Raspberry Pi',
+                'connected': True,
+                'broker': MQTT_BROKER,
+                'port': MQTT_PORT
+            })
+        else:
+            emit('mqtt_status', {
+                'status': 'error',
+                'message': 'MQTT client disconnected from Raspberry Pi',
+                'connected': False,
+                'broker': MQTT_BROKER,
+                'port': MQTT_PORT
+            })
+    except Exception as e:
+        logger.error(f"Error checking MQTT status: {e}")
+        emit('mqtt_status', {
+            'status': 'error',
+            'message': f'Error checking MQTT status: {str(e)}',
+            'connected': False
         })
 
 @socketio.on('deny_access')
@@ -434,9 +471,9 @@ def handle_deny_access(data):
         else:
             emit('action_result', {
                 'status': 'error',
-                'message': 'Failed to send relay command'
+                'message': 'Failed to send relay command - Check MQTT connection to Raspberry Pi'
             })
-            logger.error(f"✗ Failed to deny access for user {user_id}")
+            logger.error(f"✗ Failed to deny access for user {user_id} - MQTT relay command failed")
         
     except Exception as e:
         logger.error(f"Error denying access: {e}")
@@ -452,6 +489,23 @@ def send_relay_command(command, user_id, action):
             logger.error("MQTT client not available")
             return False
         
+        # Check if MQTT client is connected
+        if not mqtt_client.is_connected():
+            logger.error("MQTT client is not connected")
+            # Try to reconnect
+            try:
+                mqtt_client.reconnect()
+                logger.info("Attempting to reconnect MQTT client...")
+                # Wait a moment for connection
+                import time
+                time.sleep(1)
+                if not mqtt_client.is_connected():
+                    logger.error("Failed to reconnect MQTT client")
+                    return False
+            except Exception as reconnect_error:
+                logger.error(f"Failed to reconnect MQTT client: {reconnect_error}")
+                return False
+        
         payload = {
             'command': command,
             'user_id': user_id,
@@ -460,17 +514,24 @@ def send_relay_command(command, user_id, action):
             'source': 'web_ui'
         }
         
-        result = mqtt_client.publish(MQTT_ACTION_TOPIC, json.dumps(payload))
+        logger.info(f"📤 Sending relay command: {command} for user {user_id}")
+        logger.info(f"📤 MQTT Topic: {MQTT_ACTION_TOPIC}")
+        logger.info(f"📤 Payload: {payload}")
+        
+        result = mqtt_client.publish(MQTT_ACTION_TOPIC, json.dumps(payload), qos=1)
         
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            logger.info(f"✓ Relay command sent: {command} for user {user_id}")
+            logger.info(f"✓ Relay command sent successfully: {command} for user {user_id}")
             return True
         else:
             logger.error(f"✗ Failed to send relay command (rc: {result.rc})")
+            logger.error(f"✗ MQTT Error codes: SUCCESS=0, ERR_NO_CONN=3, ERR_CONN_LOST=4")
             return False
             
     except Exception as e:
         logger.error(f"Error sending relay command: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
         return False
 
 def log_manual_action(user_id, action, granted_denied):
@@ -1643,6 +1704,57 @@ def delete_user(user_id):
         logger.error(f"Error deleting user: {e}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/mqtt_status', methods=['GET'])
+@login_required
+def get_mqtt_status():
+    """Get MQTT connection status"""
+    try:
+        global mqtt_client
+        
+        if mqtt_client is None:
+            return jsonify({
+                'connected': False,
+                'error': 'MQTT client not initialized',
+                'broker': f'{MQTT_BROKER}:{MQTT_PORT}'
+            }), 200
+        
+        is_connected = mqtt_client.is_connected()
+        
+        return jsonify({
+            'connected': is_connected,
+            'broker': f'{MQTT_BROKER}:{MQTT_PORT}',
+            'status': 'Connected' if is_connected else 'Disconnected'
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting MQTT status: {e}")
+        return jsonify({
+            'connected': False,
+            'error': str(e),
+            'broker': f'{MQTT_BROKER}:{MQTT_PORT}'
+        }), 200
+
+@app.route('/api/next_user_id', methods=['GET'])
+@login_required
+def get_next_user_id():
+    """Get the next available user ID"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        cursor.execute("SELECT COALESCE(MAX(user_id), 0) + 1 as next_id FROM store_001")
+        result = cursor.fetchone()
+        conn.close()
+        
+        next_id = result[0] if result else 1
+        return jsonify({'next_id': next_id}), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting next user ID: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/enroll_user', methods=['POST'])
 @login_required
 def enroll_user():
@@ -1668,7 +1780,15 @@ def enroll_user():
         
         if not user_id or not username:
             logger.error(f"❌ Missing required fields: user_id={user_id}, username={username}")
-            return jsonify({'error': 'User ID and username are required'}), 400
+            return jsonify({
+                'error': 'User ID and username are required',
+                'debug': {
+                    'user_id': user_id,
+                    'username': username,
+                    'user_id_type': str(type(user_id)),
+                    'username_type': str(type(username))
+                }
+            }), 400
         
         # Check if user_id already exists in database
         logger.info("🔍 Checking if user ID already exists...")
@@ -1695,9 +1815,33 @@ def enroll_user():
         logger.info("🔍 Checking MQTT client...")
         if mqtt_client is None:
             logger.error("❌ MQTT client is None")
-            return jsonify({'error': 'MQTT client not initialized'}), 500
+            return jsonify({'error': 'MQTT client not initialized. Please restart the web UI.'}), 500
         
-        logger.info(f"✅ MQTT client available: {type(mqtt_client)}")
+        # Check if MQTT client is connected
+        if not mqtt_client.is_connected():
+            logger.warning("⚠️  MQTT client not connected, attempting to reconnect...")
+            try:
+                mqtt_client.reconnect()
+                # Wait a bit for reconnection
+                import time
+                time.sleep(1)
+                
+                if not mqtt_client.is_connected():
+                    logger.error("❌ MQTT reconnection failed")
+                    return jsonify({
+                        'error': 'MQTT client not connected to broker. Please check MQTT broker status.',
+                        'details': f'Broker: {MQTT_BROKER}:{MQTT_PORT}'
+                    }), 503
+                else:
+                    logger.info("✅ MQTT client reconnected successfully")
+            except Exception as reconnect_error:
+                logger.error(f"❌ MQTT reconnection error: {reconnect_error}")
+                return jsonify({
+                    'error': f'MQTT connection failed: {str(reconnect_error)}',
+                    'details': f'Broker: {MQTT_BROKER}:{MQTT_PORT}'
+                }), 503
+        
+        logger.info(f"✅ MQTT client connected and ready")
         
         # Prepare enrollment command
         enrollment_command = {
@@ -1733,8 +1877,21 @@ def enroll_user():
                     'status': 'enrollment_started'
                 }), 200
             else:
-                logger.error(f"❌ Failed to send enrollment command (rc: {result.rc})")
-                return jsonify({'error': f'MQTT publish failed (rc: {result.rc})'}), 500
+                # Map MQTT error codes to user-friendly messages
+                error_messages = {
+                    mqtt.MQTT_ERR_NO_CONN: 'Not connected to MQTT broker',
+                    mqtt.MQTT_ERR_PROTOCOL: 'MQTT protocol error',
+                    mqtt.MQTT_ERR_INVAL: 'Invalid MQTT parameters',
+                    mqtt.MQTT_ERR_ERRNO: 'System error',
+                }
+                error_msg = error_messages.get(result.rc, f'Unknown MQTT error (code: {result.rc})')
+                
+                logger.error(f"❌ Failed to send enrollment command: {error_msg}")
+                return jsonify({
+                    'error': f'Failed to send enrollment command: {error_msg}',
+                    'mqtt_error_code': result.rc,
+                    'suggestion': 'Please check MQTT broker connection and try again.'
+                }), 500
                 
         except Exception as mqtt_error:
             logger.error(f"❌ MQTT publish exception: {mqtt_error}")
