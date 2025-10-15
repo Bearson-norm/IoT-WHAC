@@ -18,6 +18,7 @@ import bcrypt
 import secrets
 import hashlib
 import os
+import csv
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -1075,6 +1076,12 @@ def admin_dashboard():
     
     return render_template('admin.html')
 
+@app.route('/logs_report')
+@login_required
+def logs_report():
+    """Enhanced log reports page with filtering and analytics"""
+    return render_template('logs_report.html')
+
 @app.route('/api/admin/web_users')
 @login_required
 def get_web_users():
@@ -1634,11 +1641,22 @@ def dashboard_stats():
 @app.route('/api/logs')
 @login_required
 def get_logs():
-    """Get fingerprint logs with pagination"""
+    """Get fingerprint logs with enhanced filtering, sorting, and pagination"""
     try:
+        # Get pagination parameters
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 50))
         offset = (page - 1) * per_page
+        
+        # Get filtering parameters
+        user_id = request.args.get('user_id')
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        store_id = request.args.get('store_id', 'Store001')
+        
+        # Get sorting parameters
+        sort_by = request.args.get('sort_by', 'timestamp')
+        sort_order = request.args.get('sort_order', 'DESC')
         
         conn = get_db_connection()
         if not conn:
@@ -1646,17 +1664,57 @@ def get_logs():
         
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
+        # Build query with filters
+        base_query = """
+            SELECT ld.id, ld.user_id, ld.store_id, ld.timestamp, ld.finger_template_id,
+                   s.username, s.username as display_name
+            FROM log_data ld
+            LEFT JOIN store_001 s ON ld.user_id = s.user_id
+        """
+        
+        where_conditions = []
+        params = []
+        
+        if user_id:
+            where_conditions.append("ld.user_id = %s")
+            params.append(user_id)
+        
+        if start_date:
+            where_conditions.append("ld.timestamp >= %s")
+            params.append(start_date)
+        
+        if end_date:
+            where_conditions.append("ld.timestamp <= %s")
+            params.append(end_date)
+        
+        if store_id:
+            where_conditions.append("ld.store_id = %s")
+            params.append(store_id)
+        
+        # Add WHERE clause if conditions exist
+        if where_conditions:
+            base_query += " WHERE " + " AND ".join(where_conditions)
+        
         # Get total count
-        cursor.execute("SELECT COUNT(*) as total FROM log_data")
+        count_query = f"SELECT COUNT(*) as total FROM ({base_query}) as filtered_logs"
+        cursor.execute(count_query, params)
         total = cursor.fetchone()['total']
         
-        # Get logs with pagination
-        cursor.execute("""
-            SELECT * FROM fingerprint_logs 
-            ORDER BY timestamp DESC 
-            LIMIT %s OFFSET %s
-        """, (per_page, offset))
+        # Add sorting
+        valid_sort_columns = ['timestamp', 'user_id', 'username', 'store_id']
+        if sort_by in valid_sort_columns:
+            if sort_by == 'username':
+                base_query += f" ORDER BY s.username {sort_order}"
+            else:
+                base_query += f" ORDER BY ld.{sort_by} {sort_order}"
+        else:
+            base_query += " ORDER BY ld.timestamp DESC"
         
+        # Add pagination
+        base_query += " LIMIT %s OFFSET %s"
+        params.extend([per_page, offset])
+        
+        cursor.execute(base_query, params)
         logs = cursor.fetchall()
         conn.close()
         
@@ -1665,7 +1723,15 @@ def get_logs():
             'total': total,
             'page': page,
             'per_page': per_page,
-            'total_pages': (total + per_page - 1) // per_page
+            'total_pages': (total + per_page - 1) // per_page,
+            'filters': {
+                'user_id': user_id,
+                'start_date': start_date,
+                'end_date': end_date,
+                'store_id': store_id,
+                'sort_by': sort_by,
+                'sort_order': sort_order
+            }
         })
         
     except Exception as e:
@@ -1675,11 +1741,25 @@ def get_logs():
 @app.route('/api/action_logs')
 @login_required
 def get_action_logs():
-    """Get action logs with pagination"""
+    """Get action logs with enhanced filtering, sorting, and pagination"""
     try:
+        # Get pagination parameters
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 50))
         offset = (page - 1) * per_page
+        
+        # Get filtering parameters
+        user_id = request.args.get('user_id')
+        username = request.args.get('username')
+        action = request.args.get('action')
+        granted_denied = request.args.get('granted_denied')
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        store_id = request.args.get('store_id', 'Store001')
+        
+        # Get sorting parameters
+        sort_by = request.args.get('sort_by', 'timestamp')
+        sort_order = request.args.get('sort_order', 'DESC')
         
         conn = get_db_connection()
         if not conn:
@@ -1687,17 +1767,70 @@ def get_action_logs():
         
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
+        # Build query with filters
+        base_query = """
+            SELECT la.id, la.user_id, la.store_id, la.username, la.timestamp, 
+                   la.action, la.granted_denied,
+                   CASE 
+                       WHEN la.granted_denied = 'granted' THEN 'success'
+                       WHEN la.granted_denied = 'denied' THEN 'danger'
+                       ELSE 'warning'
+                   END as status_class
+            FROM log_action la
+        """
+        
+        where_conditions = []
+        params = []
+        
+        if user_id:
+            where_conditions.append("la.user_id = %s")
+            params.append(user_id)
+        
+        if username:
+            where_conditions.append("la.username ILIKE %s")
+            params.append(f"%{username}%")
+        
+        if action:
+            where_conditions.append("la.action = %s")
+            params.append(action)
+        
+        if granted_denied:
+            where_conditions.append("la.granted_denied = %s")
+            params.append(granted_denied)
+        
+        if start_date:
+            where_conditions.append("la.timestamp >= %s")
+            params.append(start_date)
+        
+        if end_date:
+            where_conditions.append("la.timestamp <= %s")
+            params.append(end_date)
+        
+        if store_id:
+            where_conditions.append("la.store_id = %s")
+            params.append(store_id)
+        
+        # Add WHERE clause if conditions exist
+        if where_conditions:
+            base_query += " WHERE " + " AND ".join(where_conditions)
+        
         # Get total count
-        cursor.execute("SELECT COUNT(*) as total FROM log_action")
+        count_query = f"SELECT COUNT(*) as total FROM ({base_query}) as filtered_logs"
+        cursor.execute(count_query, params)
         total = cursor.fetchone()['total']
         
-        # Get action logs with pagination
-        cursor.execute("""
-            SELECT * FROM action_logs 
-            ORDER BY timestamp DESC 
-            LIMIT %s OFFSET %s
-        """, (per_page, offset))
+        # Add sorting
+        valid_sort_columns = ['timestamp', 'user_id', 'username', 'action', 'granted_denied', 'store_id']
+        if sort_by in valid_sort_columns:
+            base_query += f" ORDER BY la.{sort_by} {sort_order}"
+        else:
+            base_query += " ORDER BY la.timestamp DESC"
         
+        # Add pagination
+        base_query += " LIMIT %s OFFSET %s"
+        params.extend([per_page, offset])
+        
+        cursor.execute(base_query, params)
         logs = cursor.fetchall()
         conn.close()
         
@@ -1706,7 +1839,18 @@ def get_action_logs():
             'total': total,
             'page': page,
             'per_page': per_page,
-            'total_pages': (total + per_page - 1) // per_page
+            'total_pages': (total + per_page - 1) // per_page,
+            'filters': {
+                'user_id': user_id,
+                'username': username,
+                'action': action,
+                'granted_denied': granted_denied,
+                'start_date': start_date,
+                'end_date': end_date,
+                'store_id': store_id,
+                'sort_by': sort_by,
+                'sort_order': sort_order
+            }
         })
         
     except Exception as e:
@@ -1903,6 +2047,278 @@ def get_next_user_id():
         
     except Exception as e:
         logger.error(f"Error getting next user ID: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/logs/export')
+@login_required
+def export_logs():
+    """Export logs to CSV with filtering"""
+    try:
+        # Get filtering parameters
+        user_id = request.args.get('user_id')
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        store_id = request.args.get('store_id', 'Store001')
+        log_type = request.args.get('type', 'fingerprint')  # 'fingerprint' or 'action'
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        if log_type == 'action':
+            # Export action logs
+            base_query = """
+                SELECT la.id, la.user_id, la.store_id, la.username, la.timestamp, 
+                       la.action, la.granted_denied
+                FROM log_action la
+            """
+            filename = f"action_logs_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        else:
+            # Export fingerprint logs
+            base_query = """
+                SELECT ld.id, ld.user_id, ld.store_id, ld.timestamp, ld.finger_template_id,
+                       s.username
+                FROM log_data ld
+                LEFT JOIN store_001 s ON ld.user_id = s.user_id
+            """
+            filename = f"fingerprint_logs_export_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
+        
+        where_conditions = []
+        params = []
+        
+        if user_id:
+            where_conditions.append("la.user_id = %s" if log_type == 'action' else "ld.user_id = %s")
+            params.append(user_id)
+        
+        if start_date:
+            where_conditions.append("la.timestamp >= %s" if log_type == 'action' else "ld.timestamp >= %s")
+            params.append(start_date)
+        
+        if end_date:
+            where_conditions.append("la.timestamp <= %s" if log_type == 'action' else "ld.timestamp <= %s")
+            params.append(end_date)
+        
+        if store_id:
+            where_conditions.append("la.store_id = %s" if log_type == 'action' else "ld.store_id = %s")
+            params.append(store_id)
+        
+        if where_conditions:
+            base_query += " WHERE " + " AND ".join(where_conditions)
+        
+        base_query += " ORDER BY timestamp DESC"
+        
+        cursor.execute(base_query, params)
+        logs = cursor.fetchall()
+        conn.close()
+        
+        # Create CSV content
+        import io
+        output = io.StringIO()
+        
+        if log_type == 'action':
+            fieldnames = ['id', 'user_id', 'store_id', 'username', 'timestamp', 'action', 'granted_denied']
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            for log in logs:
+                writer.writerow(dict(log))
+        else:
+            fieldnames = ['id', 'user_id', 'store_id', 'timestamp', 'finger_template_id', 'username']
+            writer = csv.DictWriter(output, fieldnames=fieldnames)
+            writer.writeheader()
+            for log in logs:
+                writer.writerow(dict(log))
+        
+        csv_content = output.getvalue()
+        output.close()
+        
+        from flask import Response
+        return Response(
+            csv_content,
+            mimetype='text/csv',
+            headers={'Content-Disposition': f'attachment; filename={filename}'}
+        )
+        
+    except Exception as e:
+        logger.error(f"Error exporting logs: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/logs/stats')
+@login_required
+def get_log_stats():
+    """Get log statistics with filtering"""
+    try:
+        # Get filtering parameters
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        store_id = request.args.get('store_id', 'Store001')
+        group_by = request.args.get('group_by', 'day')  # 'day', 'hour', 'user'
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Build date filter
+        date_filter = ""
+        params = [store_id]
+        
+        if start_date:
+            date_filter += " AND timestamp >= %s"
+            params.append(start_date)
+        
+        if end_date:
+            date_filter += " AND timestamp <= %s"
+            params.append(end_date)
+        
+        # Get fingerprint log stats
+        if group_by == 'day':
+            time_group = "DATE(timestamp)"
+        elif group_by == 'hour':
+            time_group = "DATE_TRUNC('hour', timestamp)"
+        else:
+            time_group = "DATE(timestamp)"
+        
+        cursor.execute(f"""
+            SELECT {time_group} as period, COUNT(*) as total_scans,
+                   COUNT(DISTINCT user_id) as unique_users
+            FROM log_data 
+            WHERE store_id = %s {date_filter}
+            GROUP BY {time_group}
+            ORDER BY period
+        """, params)
+        
+        fingerprint_stats = cursor.fetchall()
+        
+        # Get action log stats
+        cursor.execute(f"""
+            SELECT {time_group} as period, 
+                   COUNT(*) as total_actions,
+                   COUNT(CASE WHEN granted_denied = 'granted' THEN 1 END) as granted_actions,
+                   COUNT(CASE WHEN granted_denied = 'denied' THEN 1 END) as denied_actions
+            FROM log_action 
+            WHERE store_id = %s {date_filter}
+            GROUP BY {time_group}
+            ORDER BY period
+        """, params)
+        
+        action_stats = cursor.fetchall()
+        
+        # Get user activity stats
+        cursor.execute(f"""
+            SELECT s.username, COUNT(ld.id) as scan_count,
+                   MAX(ld.timestamp) as last_scan
+            FROM store_001 s
+            LEFT JOIN log_data ld ON s.user_id = ld.user_id 
+                AND ld.store_id = %s {date_filter.replace('timestamp', 'ld.timestamp')}
+            GROUP BY s.user_id, s.username
+            ORDER BY scan_count DESC
+        """, params)
+        
+        user_stats = cursor.fetchall()
+        
+        conn.close()
+        
+        return jsonify({
+            'fingerprint_stats': [dict(row) for row in fingerprint_stats],
+            'action_stats': [dict(row) for row in action_stats],
+            'user_stats': [dict(row) for row in user_stats],
+            'filters': {
+                'start_date': start_date,
+                'end_date': end_date,
+                'store_id': store_id,
+                'group_by': group_by
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting log stats: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/logs/summary')
+@login_required
+def get_log_summary():
+    """Get log summary with key metrics"""
+    try:
+        # Get filtering parameters
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        store_id = request.args.get('store_id', 'Store001')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Build date filter
+        date_filter = ""
+        params = [store_id]
+        
+        if start_date:
+            date_filter += " AND timestamp >= %s"
+            params.append(start_date)
+        
+        if end_date:
+            date_filter += " AND timestamp <= %s"
+            params.append(end_date)
+        
+        # Get summary statistics
+        cursor.execute(f"""
+            SELECT 
+                COUNT(*) as total_scans,
+                COUNT(DISTINCT user_id) as unique_users,
+                COUNT(CASE WHEN timestamp >= CURRENT_DATE THEN 1 END) as today_scans,
+                COUNT(CASE WHEN timestamp >= CURRENT_DATE - INTERVAL '7 days' THEN 1 END) as week_scans,
+                COUNT(CASE WHEN timestamp >= CURRENT_DATE - INTERVAL '30 days' THEN 1 END) as month_scans
+            FROM log_data 
+            WHERE store_id = %s {date_filter}
+        """, params)
+        
+        scan_summary = cursor.fetchone()
+        
+        cursor.execute(f"""
+            SELECT 
+                COUNT(*) as total_actions,
+                COUNT(CASE WHEN granted_denied = 'granted' THEN 1 END) as granted_actions,
+                COUNT(CASE WHEN granted_denied = 'denied' THEN 1 END) as denied_actions,
+                COUNT(CASE WHEN timestamp >= CURRENT_DATE THEN 1 END) as today_actions
+            FROM log_action 
+            WHERE store_id = %s {date_filter}
+        """, params)
+        
+        action_summary = cursor.fetchone()
+        
+        # Get top users by activity
+        cursor.execute(f"""
+            SELECT s.username, COUNT(ld.id) as scan_count
+            FROM store_001 s
+            LEFT JOIN log_data ld ON s.user_id = ld.user_id 
+                AND ld.store_id = %s {date_filter.replace('timestamp', 'ld.timestamp')}
+            GROUP BY s.user_id, s.username
+            ORDER BY scan_count DESC
+            LIMIT 10
+        """, params)
+        
+        top_users = cursor.fetchall()
+        
+        conn.close()
+        
+        return jsonify({
+            'scan_summary': dict(scan_summary),
+            'action_summary': dict(action_summary),
+            'top_users': [dict(row) for row in top_users],
+            'filters': {
+                'start_date': start_date,
+                'end_date': end_date,
+                'store_id': store_id
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting log summary: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/enroll_user', methods=['POST'])
