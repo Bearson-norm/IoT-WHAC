@@ -14,21 +14,40 @@ A complete fingerprint management system with AS608 sensor, MQTT communication, 
 │   └── README.md                    # Local setup guide
 │
 ├── server/                 # Files for Server
-│   ├── mqtt_data_processor.py       ⭐ MQTT data processor
+│   ├── mqtt_data_processor.py       ⭐ Main MQTT data processor
 │   ├── server_template_manager.py   # Template management
 │   ├── requirements.txt             # Dependencies
 │   └── README.md                    # Server setup guide
 │
 ├── web_ui/                 # Web Interface
-│   ├── app.py                      ⭐ Flask web application
+│   ├── app.py                      ⭐ Main Flask web application
 │   ├── templates/                  # HTML templates
 │   ├── database_setup.sql          # Database schema
 │   ├── requirements.txt            # Dependencies
 │   └── README.md                   # Web UI setup guide
 │
-├── start_system.py         # System startup script
+├── tests/                  # Test and Utility Programs
+│   ├── test_*.py                   # Various test programs
+│   ├── check_*.py                  # System check utilities
+│   ├── debug_*.py                  # Debug utilities
+│   └── README.md                   # Test documentation
+│
 └── README.md               # This file
 ```
+
+## 🚀 Main Programs
+
+### Local Machine (Raspberry Pi)
+- **`local_machine/fingerprint_simple_client.py`** - Main fingerprint scanning program
+- Handles fingerprint enrollment, verification, and MQTT communication
+
+### Server
+- **`server/mqtt_data_processor.py`** - Main MQTT data processor
+- Receives fingerprint data, processes it, and stores in database
+
+### Web Interface
+- **`web_ui/app.py`** - Main Flask web application
+- Provides web interface for user management and real-time monitoring
 
 ## 🔄 Complete Data Flow
 

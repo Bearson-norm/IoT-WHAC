@@ -1,0 +1,75 @@
+version: '3.8'
+
+services:
+  mqtt-processor:
+    build: .
+    container_name: whac-mqtt-processor
+    restart: unless-stopped
+    
+    # Environment variables
+    environment:
+      - MQTT_BROKER=${MQTT_BROKER:-103.87.67.139}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_NAME=${DB_NAME:-whac_master}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-Admin123}
+      - DB_PORT=${DB_PORT:-5432}
+      - SCAN_TOPIC=${SCAN_TOPIC:-WHAC/Store001/in}
+      - ACTION_TOPIC=${ACTION_TOPIC:-WHAC/Store001/action}
+      - STATUS_TOPIC=${STATUS_TOPIC:-WHAC/Store001/status}
+    
+    # Volume mounts for persistence
+    volumes:
+      - ./logs:/app/logs
+      - ./central_fingerprints.db:/app/central_fingerprints.db
+    
+    # Dependencies
+    depends_on:
+      - postgres
+      - mqtt-broker
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import paho.mqtt.client as mqtt; print('Health check passed')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  postgres:
+    image: postgres:13
+    container_name: whac-server-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-whac_master}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-Admin123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-whac_master}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  mqtt-broker:
+    image: eclipse-mosquitto:2.0
+    container_name: whac-server-mqtt-broker
+    restart: unless-stopped
+    ports:
+      - "1883:1883"
+      - "9001:9001"
+    volumes:
+      - ./mosquitto.conf:/mosquitto/config/mosquitto.conf:ro
+    healthcheck:
+      test: ["CMD", "mosquitto_pub", "-h", "localhost", "-t", "test", "-m", "test"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+volumes:
+  postgres_data:
+

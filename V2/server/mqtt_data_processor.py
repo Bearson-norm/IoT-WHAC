@@ -12,39 +12,40 @@ import psycopg2.extras
 from datetime import datetime
 import threading
 import time
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 class MQTTDataProcessor:
-    def __init__(self, mqtt_broker="103.87.67.139", mqtt_port=1883):
+    def __init__(self, mqtt_broker=None, mqtt_port=None):
         """
         Initialize MQTT data processor
         
         Args:
-            mqtt_broker: MQTT broker IP address
-            mqtt_port: MQTT broker port
+            mqtt_broker: MQTT broker IP address (defaults to environment variable)
+            mqtt_port: MQTT broker port (defaults to environment variable)
         """
-        self.mqtt_broker = mqtt_broker
-        self.mqtt_port = mqtt_port
+        self.mqtt_broker = mqtt_broker or os.getenv('MQTT_BROKER', '103.87.67.139')
+        self.mqtt_port = mqtt_port or int(os.getenv('MQTT_PORT', '1883'))
         self.mqtt_client = None
         self.connected = False
         self.running = True
         
         # Database configuration
         self.db_config = {
-            'host': 'localhost',
-            'database': 'whac_master',
-            'user': 'postgres',
-            'password': 'Admin123',
-            'port': 5432
+            'host': os.getenv('DB_HOST', 'localhost'),
+            'database': os.getenv('DB_NAME', 'whac_master'),
+            'user': os.getenv('DB_USER', 'postgres'),
+            'password': os.getenv('DB_PASSWORD', 'Admin123'),
+            'port': int(os.getenv('DB_PORT', '5432'))
         }
         
         # MQTT Topics
-        self.SCAN_TOPIC = "WHAC/Store001/in"  # Receive scan data
-        self.ACTION_TOPIC = "WHAC/Store001/action"  # Send relay commands
-        self.STATUS_TOPIC = "WHAC/Store001/status"  # Send status updates
+        self.SCAN_TOPIC = os.getenv('SCAN_TOPIC', 'WHAC/Store001/in')  # Receive scan data
+        self.ACTION_TOPIC = os.getenv('ACTION_TOPIC', 'WHAC/Store001/action')  # Send relay commands
+        self.STATUS_TOPIC = os.getenv('STATUS_TOPIC', 'WHAC/Store001/status')  # Send status updates
         
         # Setup MQTT
         self.setup_mqtt()

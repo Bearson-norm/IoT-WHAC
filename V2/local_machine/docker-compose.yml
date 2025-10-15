@@ -1,0 +1,48 @@
+version: '3.8'
+
+services:
+  fingerprint-scanner:
+    build: .
+    container_name: whac-fingerprint-scanner
+    restart: unless-stopped
+    
+    # Privileged mode for GPIO access
+    privileged: true
+    
+    # Device access for serial communication
+    devices:
+      - /dev/ttyUSB0:/dev/ttyUSB0
+      - /dev/serial0:/dev/serial0
+      - /dev/ttyACM0:/dev/ttyACM0
+    
+    # Environment variables
+    environment:
+      - STORE_ID=${STORE_ID:-Store001}
+      - MQTT_BROKER=${MQTT_BROKER:-103.87.67.139}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - MQTT_TOPIC=${MQTT_TOPIC:-WHAC/Store001/in}
+      - FINGERPRINT_PORT=${FINGERPRINT_PORT:-/dev/serial0}
+      - BAUD_RATE=${BAUD_RATE:-57600}
+      - CONFIDENCE_THRESHOLD=${CONFIDENCE_THRESHOLD:-50}
+      - SCAN_INTERVAL=${SCAN_INTERVAL:-5}
+      - LOG_LEVEL=${LOG_LEVEL:-INFO}
+      - MQTT_USERNAME=${MQTT_USERNAME:-}
+      - MQTT_PASSWORD=${MQTT_PASSWORD:-}
+    
+    # Volume mounts for persistence
+    volumes:
+      - ./logs:/app/logs
+      - ./fingerprints.db:/app/fingerprints.db
+      - ./config.py:/app/config.py:ro
+    
+    # Network mode for host networking (required for GPIO)
+    network_mode: host
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import serial; print('Health check passed')"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
