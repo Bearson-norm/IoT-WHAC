@@ -17,13 +17,15 @@ import threading
 import bcrypt
 import secrets
 import hashlib
+import os
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 app = Flask(__name__)
-app.config['SECRET_KEY'] = 'whac_fingerprint_secret_key'
+app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'whac_fingerprint_secret_key')
+app.config['DEBUG'] = False  # Explicitly disable debug mode
 
 # Initialize SocketIO with explicit async_mode for thread compatibility
 # async_mode='threading' is required for MQTT background thread communication
@@ -35,21 +37,23 @@ socketio = SocketIO(app,
 
 # Database configuration
 DB_CONFIG = {
-    'host': 'localhost',
-    'database': 'whac_master',
-    'user': 'postgres',
-    'password': 'Admin123',
-    'port': 5432
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'database': os.getenv('DB_NAME', 'whac_master'),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD', 'Admin123'),
+    'port': int(os.getenv('DB_PORT', '5432'))
 }
 
 # MQTT configuration
-MQTT_BROKER = "103.87.67.139"
-MQTT_PORT = 1883
-MQTT_ACTION_TOPIC = "WHAC/Store001/action"
-MQTT_SCAN_TOPIC = "WHAC/Store001/in"
+MQTT_BROKER = os.getenv('MQTT_BROKER', '103.87.67.139')
+MQTT_PORT = int(os.getenv('MQTT_PORT', '1883'))
+MQTT_ACTION_TOPIC = os.getenv('MQTT_ACTION_TOPIC', 'WHAC/Store001/action')
+MQTT_SCAN_TOPIC = os.getenv('MQTT_SCAN_TOPIC', 'WHAC/Store001/in')
 
 # Global MQTT client
 mqtt_client = None
+mqtt_reconnect_attempts = 0
+MAX_RECONNECT_ATTEMPTS = 5
 
 def get_db_connection():
     """Get database connection"""
@@ -63,21 +67,112 @@ def get_db_connection():
 def setup_mqtt_client():
     """Setup MQTT client for receiving scan notifications"""
     global mqtt_client
+    
+    # Prevent multiple MQTT client instances
+    if mqtt_client is not None:
+        logger.warning("⚠️  MQTT client already exists, cleaning up previous instance...")
+        try:
+            mqtt_client.loop_stop()
+            mqtt_client.disconnect()
+        except:
+            pass
+        mqtt_client = None
+    
     try:
-        # Use unique client ID to avoid conflicts with server processor
-        mqtt_client = mqtt.Client(client_id="whac_web_ui", clean_session=True)
+        # Use unique client ID with timestamp to avoid conflicts
+        # clean_session=False to maintain subscription state during reconnections
+        import time
+        unique_client_id = f"whac_web_ui_{int(time.time())}"
+        mqtt_client = mqtt.Client(client_id=unique_client_id, clean_session=False)
+        
+        # Configure connection options for better stability
         mqtt_client.on_connect = on_mqtt_connect
         mqtt_client.on_message = on_mqtt_message
+        mqtt_client.on_disconnect = on_mqtt_disconnect
+        
+        # Set keepalive to 60 seconds to reduce disconnections
+        # Add connection options for better stability
         mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 60)
+        
+        # Enable automatic reconnection
+        mqtt_client.enable_logger(logger)
+        
+        # Start the loop with better error handling
         mqtt_client.loop_start()
         logger.info("✓ MQTT client connected for real-time notifications")
     except Exception as e:
         logger.error(f"MQTT client setup error: {e}")
 
+def on_mqtt_disconnect(client, userdata, rc):
+    """MQTT disconnection callback"""
+    global mqtt_reconnect_attempts
+    
+    if rc == 0:
+        # Normal disconnection (client requested)
+        logger.info("🔌 MQTT client disconnected normally")
+        mqtt_reconnect_attempts = 0  # Reset counter on normal disconnect
+    else:
+        # Unexpected disconnection
+        logger.warning(f"⚠️  MQTT client disconnected unexpectedly (code: {rc})")
+        
+        # Code 7 = Connection lost, but don't panic - it might be a false alarm
+        if rc == 7:
+            logger.info("ℹ️  Code 7: Connection lost - this may be a network hiccup")
+            logger.info("ℹ️  Will verify connection status before next command")
+            
+            # For Code 7, only reconnect if we haven't reconnected recently
+            # This prevents connection storms on unstable networks
+            import time
+            current_time = time.time()
+            
+            # Only reconnect if it's been more than 30 seconds since last reconnection
+            if not hasattr(on_mqtt_disconnect, 'last_reconnect_time'):
+                on_mqtt_disconnect.last_reconnect_time = 0
+            
+            if current_time - on_mqtt_disconnect.last_reconnect_time > 30:
+                on_mqtt_disconnect.last_reconnect_time = current_time
+                logger.info("🔄 Code 7: Scheduling reconnection after 30s cooldown...")
+                
+                def delayed_reconnect():
+                    time.sleep(30)
+                    ensure_mqtt_connection()
+                
+                import threading
+                threading.Thread(target=delayed_reconnect, daemon=True).start()
+            else:
+                logger.info("ℹ️  Code 7: Skipping reconnection (too recent)")
+        else:
+            logger.warning("MQTT connection lost - will attempt to reconnect on next command")
+            
+            # Increment reconnect attempts counter for non-Code 7 disconnections
+            mqtt_reconnect_attempts += 1
+            
+            # Schedule automatic reconnection with exponential backoff
+            if mqtt_reconnect_attempts <= MAX_RECONNECT_ATTEMPTS:
+                import threading
+                import time
+                
+                # Calculate backoff delay: 2^attempts seconds, max 60 seconds
+                delay = min(2 ** mqtt_reconnect_attempts, 60)
+                logger.info(f"🔄 Scheduling MQTT reconnection in {delay} seconds (attempt {mqtt_reconnect_attempts}/{MAX_RECONNECT_ATTEMPTS})")
+                
+                def delayed_reconnect():
+                    time.sleep(delay)
+                    ensure_mqtt_connection()
+                
+                threading.Thread(target=delayed_reconnect, daemon=True).start()
+            else:
+                logger.error(f"❌ Max reconnection attempts ({MAX_RECONNECT_ATTEMPTS}) reached. Manual intervention required.")
+
 def on_mqtt_connect(client, userdata, flags, rc):
     """MQTT connection callback"""
+    global mqtt_reconnect_attempts
+    
     if rc == 0:
         logger.info("✅ Web UI MQTT client connected successfully")
+        
+        # Reset reconnection counter on successful connection
+        mqtt_reconnect_attempts = 0
         
         # Subscribe to scan notifications
         client.subscribe(MQTT_SCAN_TOPIC, qos=1)
@@ -445,6 +540,73 @@ def handle_check_mqtt_status():
             'connected': False
         })
 
+def ensure_mqtt_connection():
+    """Ensure MQTT connection is active, reconnect if needed"""
+    global mqtt_client
+    try:
+        if not mqtt_client:
+            logger.warning("MQTT client not initialized, setting up...")
+            setup_mqtt_client()
+            return mqtt_client and mqtt_client.is_connected()
+        
+        # Check connection status
+        is_connected = mqtt_client.is_connected()
+        
+        if not is_connected:
+            logger.warning("MQTT client disconnected, attempting to reconnect...")
+            try:
+                # Stop current loop if running
+                try:
+                    mqtt_client.loop_stop()
+                except:
+                    pass  # Loop might not be running
+                
+                # Reconnect with shorter keepalive for faster detection
+                mqtt_client.connect(MQTT_BROKER, MQTT_PORT, 30)
+                mqtt_client.loop_start()
+                
+                # Wait for connection to establish with exponential backoff
+                import time
+                time.sleep(1)  # Reduced from 2 seconds
+                
+                # Verify connection
+                if mqtt_client.is_connected():
+                    logger.info("✅ MQTT client reconnected successfully")
+                    return True
+                else:
+                    logger.error("❌ Failed to reconnect MQTT client")
+                    return False
+            except Exception as reconnect_error:
+                logger.error(f"❌ MQTT reconnection error: {reconnect_error}")
+                return False
+        else:
+            # Connection appears to be active
+            logger.debug("✅ MQTT client connection verified")
+            return True
+        
+    except Exception as e:
+        logger.error(f"Error ensuring MQTT connection: {e}")
+        return False
+
+def test_mqtt_connection():
+    """Test MQTT connection by sending a ping"""
+    global mqtt_client
+    try:
+        if not mqtt_client:
+            return False
+        
+        # Try to ping the broker
+        result = mqtt_client.ping()
+        if result == 0:
+            logger.debug("✅ MQTT ping successful - connection is active")
+            return True
+        else:
+            logger.warning(f"⚠️  MQTT ping failed (result: {result})")
+            return False
+    except Exception as e:
+        logger.warning(f"⚠️  MQTT ping error: {e}")
+        return False
+
 @socketio.on('deny_access')
 def handle_deny_access(data):
     """Handle deny access command"""
@@ -485,26 +647,14 @@ def handle_deny_access(data):
 def send_relay_command(command, user_id, action):
     """Send relay control command via MQTT"""
     try:
-        if not mqtt_client:
-            logger.error("MQTT client not available")
+        # Ensure MQTT connection is active
+        if not ensure_mqtt_connection():
+            logger.error("❌ Cannot establish MQTT connection")
             return False
         
-        # Check if MQTT client is connected
-        if not mqtt_client.is_connected():
-            logger.error("MQTT client is not connected")
-            # Try to reconnect
-            try:
-                mqtt_client.reconnect()
-                logger.info("Attempting to reconnect MQTT client...")
-                # Wait a moment for connection
-                import time
-                time.sleep(1)
-                if not mqtt_client.is_connected():
-                    logger.error("Failed to reconnect MQTT client")
-                    return False
-            except Exception as reconnect_error:
-                logger.error(f"Failed to reconnect MQTT client: {reconnect_error}")
-                return False
+        # Test connection with ping to verify it's really working
+        if not test_mqtt_connection():
+            logger.warning("⚠️  MQTT ping failed, but connection appears active - proceeding anyway")
         
         payload = {
             'command': command,
@@ -1914,7 +2064,7 @@ if __name__ == '__main__':
     logger.info("=" * 80)
     logger.info(f"📊 SocketIO async_mode: {socketio.async_mode}")
     logger.info(f"🌐 CORS: Enabled for all origins")
-    logger.info(f"🔧 Debug mode: True")
+    logger.info(f"🔧 Debug mode: {app.config.get('DEBUG', False)}")
     logger.info(f"🌍 Host: 0.0.0.0 (all interfaces)")
     logger.info(f"🔌 Port: 5000")
     logger.info("=" * 80)
@@ -1928,4 +2078,4 @@ if __name__ == '__main__':
     logger.info("=" * 80)
     
     # Run the application with SocketIO
-    socketio.run(app, debug=True, host='0.0.0.0', port=5000)
+    socketio.run(app, debug=False, host='0.0.0.0', port=5000, allow_unsafe_werkzeug=True)

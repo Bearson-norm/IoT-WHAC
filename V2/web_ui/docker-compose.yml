@@ -1,0 +1,78 @@
+version: '3.8'
+
+services:
+  web-ui:
+    build: .
+    container_name: whac-web-ui
+    restart: unless-stopped
+    ports:
+      - "5000:5000"
+    
+    # Resource limits for better performance
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+          cpus: '0.5'
+        reservations:
+          memory: 256M
+          cpus: '0.25'
+    
+    # Environment variables
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_NAME=${DB_NAME:-whac_master}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-Admin123}
+      - DB_PORT=${DB_PORT:-5432}
+      - MQTT_BROKER=${MQTT_BROKER:-103.87.67.139}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - MQTT_ACTION_TOPIC=${MQTT_ACTION_TOPIC:-WHAC/Store001/action}
+      - MQTT_SCAN_TOPIC=${MQTT_SCAN_TOPIC:-WHAC/Store001/in}
+      - FLASK_ENV=${FLASK_ENV:-production}
+      - SECRET_KEY=${SECRET_KEY:-whac_fingerprint_secret_key}
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+    
+    # Volume mounts for persistence
+    volumes:
+      - ./logs:/app/logs
+      - ./static:/app/static
+      - ./templates:/app/templates
+    
+    # Dependencies
+    depends_on:
+      - postgres
+    
+    # Optimized health check - less frequent and lighter
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('localhost', 5000), timeout=3)"]
+      interval: 60s
+      timeout: 5s
+      retries: 2
+      start_period: 60s
+
+  postgres:
+    image: postgres:13
+    container_name: whac-postgres
+    restart: unless-stopped
+    environment:
+      - POSTGRES_DB=${DB_NAME:-whac_master}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-Admin123}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./database_setup.sql:/docker-entrypoint-initdb.d/01-setup.sql:ro
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-whac_master}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+# MQTT broker removed - using external VPS broker at 103.87.67.139:1883
+
+volumes:
+  postgres_data:
+
