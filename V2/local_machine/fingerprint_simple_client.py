@@ -821,6 +821,11 @@ class SimpleFingerprintClient:
             if self.enrolling:
                 return False
             
+            # Check if fingerprint sensor is available
+            if not self.finger:
+                logger.debug("Fingerprint sensor not available")
+                return False
+            
             # Check if enough time has passed since last scan
             current_time = time.time()
             if current_time - self.last_scan_time < SCAN_INTERVAL:

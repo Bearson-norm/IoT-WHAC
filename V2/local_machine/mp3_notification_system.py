@@ -40,8 +40,8 @@ class MP3NotificationSystem:
         self.audio_device = "default"  # Default audio device
         self.volume = 80  # Volume percentage (0-100)
         
-        # MP3 file paths
-        self.mp3_directory = "/home/pi/whac_audio"  # Directory for MP3 files
+        # MP3 file paths - use current directory instead of /home/pi
+        self.mp3_directory = os.path.join(os.getcwd(), "whac_audio")  # Directory for MP3 files
         self.violation_mp3 = os.path.join(self.mp3_directory, "violation_alert.mp3")
         self.command_mp3 = os.path.join(self.mp3_directory, "command_instruction.mp3")
         self.exit_mp3 = os.path.join(self.mp3_directory, "exit_confirmation.mp3")

@@ -6,8 +6,8 @@ Installs required audio dependencies and creates audio directory structure
 
 echo "🔊 Setting up WHAC Audio System..."
 
-# Create audio directory
-AUDIO_DIR="/home/pi/whac_audio"
+# Create audio directory in current working directory
+AUDIO_DIR="$(pwd)/whac_audio"
 echo "📁 Creating audio directory: $AUDIO_DIR"
 mkdir -p "$AUDIO_DIR"
 
@@ -62,7 +62,6 @@ done
 
 # Set proper permissions
 echo "🔐 Setting file permissions..."
-chown -R pi:pi "$AUDIO_DIR"
 chmod -R 755 "$AUDIO_DIR"
 
 # Test MP3 playback
@@ -77,7 +76,7 @@ fi
 echo "🎉 WHAC Audio System setup complete!"
 echo "📁 Audio files location: $AUDIO_DIR"
 echo "🔊 Available audio files:"
-ls -la "$AUDIO_DIR"/*.mp3
+ls -la "$AUDIO_DIR"/*.mp3 2>/dev/null || echo "No MP3 files found"
 
 echo ""
 echo "🚀 To start the integrated system, run:"

@@ -39,6 +39,7 @@ class ExitButtonController:
         self.button_pressed = False
         self.last_press_time = 0
         self.debounce_time = 0.5  # 500ms debounce
+        self.use_polling = False  # Flag for polling mode
         
         # MQTT Topics
         self.EXIT_TOPIC = f"WHAC/{STORE_ID}/exit"
@@ -61,13 +62,19 @@ class ExitButtonController:
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.exit_button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
             
-            # Add interrupt for button press
-            GPIO.add_event_detect(self.exit_button_pin, GPIO.FALLING, 
-                                callback=self.button_callback, bouncetime=300)
+            # Add interrupt for button press with error handling
+            try:
+                GPIO.add_event_detect(self.exit_button_pin, GPIO.FALLING, 
+                                    callback=self.button_callback, bouncetime=300)
+                logger.info(f"✓ Exit button setup complete - Button on pin {self.exit_button_pin}")
+            except Exception as edge_error:
+                logger.warning(f"⚠️  Could not add edge detection: {edge_error}")
+                logger.info("🔄 Using polling mode for button detection")
+                self.use_polling = True
             
-            logger.info(f"✓ Exit button setup complete - Button on pin {self.exit_button_pin}")
         except Exception as e:
             logger.error(f"GPIO setup error: {e}")
+            self.use_polling = True
     
     def setup_mqtt(self):
         """Setup MQTT client"""
@@ -139,6 +146,13 @@ class ExitButtonController:
             if self.button_pressed:
                 self.handle_exit_request()
                 self.button_pressed = False
+            elif self.use_polling:
+                # Polling mode - check button state directly
+                try:
+                    if GPIO.input(self.exit_button_pin) == GPIO.LOW:
+                        self.button_callback(self.exit_button_pin)
+                except:
+                    pass
             time.sleep(0.1)
     
     def handle_exit_request(self):
