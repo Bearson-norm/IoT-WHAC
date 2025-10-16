@@ -15,3 +15,6 @@ psycopg2-binary==2.9.7
 
 # GPIO Control for Relay
 RPi.GPIO==0.7.1
+
+# Audio processing dependencies
+pygame==2.5.2

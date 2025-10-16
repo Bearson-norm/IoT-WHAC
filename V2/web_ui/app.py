@@ -233,6 +233,47 @@ def emit_notification_task(notification_data):
         import traceback
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
+def send_interrupt_notification(scan_data):
+    """Send interrupt notification for user scans"""
+    try:
+        user_id = scan_data.get('user_id')
+        username = scan_data.get('username', f'User {user_id}')
+        timestamp = scan_data.get('timestamp', datetime.now().isoformat())
+        
+        # Create interrupt notification data
+        interrupt_data = {
+            'type': 'user_scan_interrupt',
+            'title': '🚨 User Scan Detected',
+            'message': f'User {username} (ID: {user_id}) has scanned in the warehouse',
+            'user_id': user_id,
+            'username': username,
+            'timestamp': timestamp,
+            'priority': 'high',
+            'action_required': True,
+            'scan_data': scan_data
+        }
+        
+        logger.info(f"🚨 Sending interrupt notification for user scan: {username} (ID: {user_id})")
+        
+        # Emit interrupt notification via SocketIO
+        socketio.start_background_task(emit_interrupt_notification_task, interrupt_data)
+        
+    except Exception as e:
+        logger.error(f"❌ Error sending interrupt notification: {e}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
+def emit_interrupt_notification_task(interrupt_data):
+    """Background task to emit interrupt notification via SocketIO"""
+    try:
+        logger.info(f"🚨 Emitting interrupt notification: {interrupt_data}")
+        socketio.emit('interrupt_notification', interrupt_data)
+        logger.info("✅ Interrupt notification emitted successfully")
+    except Exception as e:
+        logger.error(f"❌ Error emitting interrupt notification: {e}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
 def on_mqtt_message(client, userdata, msg):
     """Handle incoming MQTT messages"""
     try:
@@ -277,6 +318,10 @@ def handle_scan_message(payload):
             'store_id': payload.get('store_id'),
             'device_id': payload.get('device_id')
         }
+        
+        # Send interrupt notification for user scans
+        if payload.get('status') == 'Match':
+            send_interrupt_notification(scan_data)
         
         logger.info(f"🔄 Formatted scan data for WebSocket: {scan_data}")
         logger.info(f"📊 MQTT Thread: {threading.current_thread().name}")
@@ -640,6 +685,53 @@ def handle_deny_access(data):
         
     except Exception as e:
         logger.error(f"Error denying access: {e}")
+        emit('action_result', {
+            'status': 'error',
+            'message': str(e)
+        })
+
+@socketio.on('send_user_command')
+def handle_send_user_command(data):
+    """Handle sending user command via MQTT"""
+    try:
+        user_id = data.get('user_id')
+        command_type = data.get('command_type')
+        instruction = data.get('instruction')
+        source = data.get('source', 'operator_dashboard')
+        
+        logger.info(f"🎯 Sending user command: {instruction} to user {user_id}")
+        
+        # Create command payload
+        command_payload = {
+            'user_id': user_id,
+            'command_type': command_type,
+            'instruction': instruction,
+            'timestamp': datetime.now().isoformat(),
+            'source': source,
+            'store_id': 'Store001'
+        }
+        
+        # Send via MQTT to local machine
+        command_topic = f"WHAC/Store001/command"
+        
+        if ensure_mqtt_connection():
+            mqtt_client.publish(command_topic, json.dumps(command_payload), qos=1)
+            logger.info(f"📤 User command sent to topic: {command_topic}")
+            
+            emit('action_result', {
+                'status': 'success',
+                'message': f'Command "{instruction}" sent to user {user_id}',
+                'action': 'command_sent'
+            })
+        else:
+            emit('action_result', {
+                'status': 'error',
+                'message': 'Failed to send command - MQTT connection not available'
+            })
+            logger.error("❌ Failed to send user command - MQTT not connected")
+        
+    except Exception as e:
+        logger.error(f"Error sending user command: {e}")
         emit('action_result', {
             'status': 'error',
             'message': str(e)

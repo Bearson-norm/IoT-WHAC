@@ -4,13 +4,20 @@ This guide will help you quickly get started with the new user management and en
 
 ## 🚀 Quick Setup
 
-### 1. Start the Enhanced User Controller
+### 1. Migrate Database (First Time Only)
+If you have an existing database with the simple schema, you need to migrate it first:
+```bash
+cd local_machine
+python3 migrate_database.py
+```
+
+### 2. Start the Enhanced User Controller
 ```bash
 cd local_machine
 python3 fingerprint_user_controller.py
 ```
 
-### 2. Start the Web UI (if not already running)
+### 3. Start the Web UI (if not already running)
 ```bash
 cd web_ui
 python3 app.py
@@ -208,6 +215,30 @@ Use the CLI interface for system diagnostics:
 - **Option 10**: Test MQTT connection
 - **Option 11**: Test fingerprint sensor
 - **Option 9**: Get system statistics
+
+### Database Migration Issues
+If you encounter database-related errors:
+
+#### Error: "no such column: user_id"
+This means your database still has the simple schema. Run the migration:
+```bash
+cd local_machine
+python3 migrate_database.py
+```
+
+#### Test the Migration
+Run the test suite to verify everything works:
+```bash
+cd local_machine
+python3 test_user_management.py
+```
+
+#### Manual Database Check
+Check your database schema:
+```bash
+cd local_machine
+sqlite3 fingerprints.db ".schema users"
+```
 
 ## 📝 Response Format
 

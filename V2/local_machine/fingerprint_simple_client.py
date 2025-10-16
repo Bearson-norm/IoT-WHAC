@@ -19,6 +19,8 @@ import glob
 import os
 from datetime import datetime
 from config import *
+from exit_button_controller import ExitButtonController
+from mp3_notification_system import MP3NotificationSystem
 
 # Configure logging
 logging.basicConfig(
@@ -65,6 +67,23 @@ class SimpleFingerprintClient:
         self.EXPORT_TOPIC = "WHAC/Store001/export"  # for exporting users
         self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
         self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
+        self.EXIT_TOPIC = f"WHAC/{STORE_ID}/exit"  # for exit requests
+        
+        # Initialize exit button controller
+        self.exit_controller = None
+        try:
+            self.exit_controller = ExitButtonController()
+            logger.info("✅ Exit button controller initialized")
+        except Exception as e:
+            logger.warning(f"⚠️  Exit button controller initialization failed: {e}")
+        
+        # Initialize MP3 notification system
+        self.mp3_system = None
+        try:
+            self.mp3_system = MP3NotificationSystem()
+            logger.info("✅ MP3 notification system initialized")
+        except Exception as e:
+            logger.warning(f"⚠️  MP3 notification system initialization failed: {e}")
     
     def setup_gpio(self):
         """Setup GPIO for relay control"""
@@ -829,12 +848,21 @@ class SimpleFingerprintClient:
                         # Always send scan result with status "Match" and confidence
                         self.send_scan_result("Match", finger_id, confidence)
                         
+                        # Play access granted notification
+                        if self.mp3_system:
+                            self.mp3_system.play_access_granted(finger_id)
+                        
                         self.last_scan_time = current_time
                         return True
                     else:
                         # No match found
                         logger.info("✗ No match found")
                         self.send_scan_result("Not Match", 0, 0)
+                        
+                        # Play access denied notification
+                        if self.mp3_system:
+                            self.mp3_system.play_access_denied("unknown")
+                        
                         self.last_scan_time = current_time
                         return True
                 else:
