@@ -1,0 +1,315 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>WHAC System Alert</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+
+        body {
+            font-family: 'Arial', sans-serif;
+            background: linear-gradient(135deg, #ff4444, #cc0000);
+            color: white;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+
+        .notification-container {
+            background: rgba(0, 0, 0, 0.9);
+            border: 3px solid #ff4444;
+            border-radius: 20px;
+            padding: 40px;
+            max-width: 800px;
+            width: 90%;
+            text-align: center;
+            box-shadow: 0 0 50px rgba(255, 68, 68, 0.5);
+            animation: pulse 2s infinite;
+        }
+
+        @keyframes pulse {
+            0% { transform: scale(1); box-shadow: 0 0 50px rgba(255, 68, 68, 0.5); }
+            50% { transform: scale(1.02); box-shadow: 0 0 80px rgba(255, 68, 68, 0.8); }
+            100% { transform: scale(1); box-shadow: 0 0 50px rgba(255, 68, 68, 0.5); }
+        }
+
+        .alert-icon {
+            font-size: 80px;
+            margin-bottom: 20px;
+            animation: blink 1s infinite;
+        }
+
+        @keyframes blink {
+            0%, 50% { opacity: 1; }
+            51%, 100% { opacity: 0.3; }
+        }
+
+        .alert-title {
+            font-size: 48px;
+            font-weight: bold;
+            margin-bottom: 20px;
+            text-shadow: 2px 2px 4px rgba(0, 0, 0, 0.8);
+        }
+
+        .alert-message {
+            font-size: 24px;
+            margin-bottom: 30px;
+            line-height: 1.4;
+        }
+
+        .user-details {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 10px;
+            padding: 20px;
+            margin-bottom: 30px;
+            font-size: 18px;
+        }
+
+        .user-details div {
+            margin-bottom: 10px;
+        }
+
+        .action-buttons {
+            display: flex;
+            gap: 20px;
+            justify-content: center;
+            flex-wrap: wrap;
+        }
+
+        .btn {
+            padding: 15px 30px;
+            border: none;
+            border-radius: 10px;
+            font-size: 20px;
+            font-weight: bold;
+            cursor: pointer;
+            transition: all 0.3s ease;
+            text-decoration: none;
+            display: inline-block;
+        }
+
+        .btn:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 5px 15px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-primary {
+            background: #007bff;
+            color: white;
+        }
+
+        .btn-success {
+            background: #28a745;
+            color: white;
+        }
+
+        .btn-danger {
+            background: #dc3545;
+            color: white;
+        }
+
+        .btn-warning {
+            background: #ffc107;
+            color: black;
+        }
+
+        .countdown {
+            position: absolute;
+            top: 20px;
+            right: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-size: 24px;
+            font-weight: bold;
+        }
+
+        .sound-indicator {
+            position: absolute;
+            top: 20px;
+            left: 20px;
+            background: rgba(0, 0, 0, 0.7);
+            padding: 10px 20px;
+            border-radius: 10px;
+            font-size: 18px;
+        }
+
+        @media (max-width: 768px) {
+            .notification-container {
+                padding: 20px;
+            }
+            
+            .alert-title {
+                font-size: 36px;
+            }
+            
+            .alert-message {
+                font-size: 20px;
+            }
+            
+            .action-buttons {
+                flex-direction: column;
+                align-items: center;
+            }
+            
+            .btn {
+                width: 100%;
+                max-width: 300px;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="sound-indicator">🔊 Audio Alert Playing</div>
+    <div class="countdown" id="countdown">30</div>
+    
+    <div class="notification-container">
+        <div class="alert-icon">🚨</div>
+        <div class="alert-title" id="alertTitle">USER SCAN DETECTED</div>
+        <div class="alert-message" id="alertMessage">A user has scanned in the warehouse</div>
+        
+        <div class="user-details" id="userDetails">
+            <div><strong>User ID:</strong> <span id="userId">Unknown</span></div>
+            <div><strong>Username:</strong> <span id="username">Unknown User</span></div>
+            <div><strong>Timestamp:</strong> <span id="timestamp">Just now</span></div>
+            <div><strong>Confidence:</strong> <span id="confidence">0%</span></div>
+        </div>
+        
+        <div class="action-buttons">
+            <button class="btn btn-primary" onclick="openDashboard()">🔍 OPEN DASHBOARD</button>
+            <button class="btn btn-success" onclick="acknowledge()">✅ ACKNOWLEDGE</button>
+            <button class="btn btn-warning" onclick="sendCommand('turn_around')">🔄 TURN AROUND</button>
+            <button class="btn btn-warning" onclick="sendCommand('stretch_arms')">🤲 STRETCH ARMS</button>
+            <button class="btn btn-danger" onclick="dismiss()">❌ DISMISS</button>
+        </div>
+    </div>
+
+    <script>
+        // Get URL parameters
+        const urlParams = new URLSearchParams(window.location.search);
+        
+        // Update notification content
+        document.getElementById('alertTitle').textContent = urlParams.get('title') || 'USER SCAN DETECTED';
+        document.getElementById('alertMessage').textContent = urlParams.get('message') || 'A user has scanned in the warehouse';
+        document.getElementById('userId').textContent = urlParams.get('userId') || 'Unknown';
+        document.getElementById('username').textContent = urlParams.get('username') || 'Unknown User';
+        document.getElementById('timestamp').textContent = urlParams.get('timestamp') || new Date().toLocaleString();
+        document.getElementById('confidence').textContent = (urlParams.get('confidence') || '0') + '%';
+        
+        // Countdown timer
+        let timeLeft = 30;
+        const countdownElement = document.getElementById('countdown');
+        
+        const countdown = setInterval(() => {
+            timeLeft--;
+            countdownElement.textContent = timeLeft;
+            
+            if (timeLeft <= 0) {
+                clearInterval(countdown);
+                dismiss();
+            }
+        }, 1000);
+        
+        // Play alert sound
+        function playAlertSound() {
+            try {
+                const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+                const oscillator = audioContext.createOscillator();
+                const gainNode = audioContext.createGain();
+                
+                oscillator.connect(gainNode);
+                gainNode.connect(audioContext.destination);
+                
+                oscillator.frequency.setValueAtTime(1000, audioContext.currentTime);
+                gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+                gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+                
+                oscillator.start(audioContext.currentTime);
+                oscillator.stop(audioContext.currentTime + 0.5);
+            } catch (e) {
+                console.log('Audio not available');
+            }
+        }
+        
+        // Play sound on load
+        playAlertSound();
+        
+        // Play sound every 5 seconds
+        setInterval(playAlertSound, 5000);
+        
+        // Functions
+        function openDashboard() {
+            window.open('http://localhost:5000', '_blank');
+            dismiss();
+        }
+        
+        function acknowledge() {
+            // Send acknowledgment via WebSocket or fetch
+            fetch('/api/acknowledge_notification', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    userId: urlParams.get('userId'),
+                    action: 'acknowledged',
+                    timestamp: new Date().toISOString()
+                })
+            }).catch(e => console.log('Acknowledgment failed:', e));
+            
+            dismiss();
+        }
+        
+        function sendCommand(command) {
+            const userId = urlParams.get('userId');
+            if (userId) {
+                fetch('/api/send_user_command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json',
+                    },
+                    body: JSON.stringify({
+                        user_id: userId,
+                        command_type: 'user_instruction',
+                        instruction: command,
+                        timestamp: new Date().toISOString(),
+                        source: 'notification_popup'
+                    })
+                }).then(response => {
+                    if (response.ok) {
+                        alert(`Command "${command}" sent to user ${userId}`);
+                    }
+                }).catch(e => console.log('Command failed:', e));
+            }
+            dismiss();
+        }
+        
+        function dismiss() {
+            window.close();
+        }
+        
+        // Prevent context menu
+        document.addEventListener('contextmenu', e => e.preventDefault());
+        
+        // Prevent drag
+        document.addEventListener('dragstart', e => e.preventDefault());
+        
+        // Make window always on top (if possible)
+        if (window.focus) {
+            window.focus();
+        }
+        
+        // Request fullscreen
+        if (document.documentElement.requestFullscreen) {
+            document.documentElement.requestFullscreen().catch(e => console.log('Fullscreen not available'));
+        }
+    </script>
+</body>
+</html>

@@ -4,7 +4,7 @@ Web UI for WHAC Fingerprint System
 Displays fingerprint data from PostgreSQL database
 """
 
-from flask import Flask, render_template, jsonify, request, session, redirect, url_for, flash
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for, flash, send_file
 from flask_socketio import SocketIO, emit
 from functools import wraps
 import psycopg2
@@ -1667,6 +1667,11 @@ def delete_fingerprint_user(user_id):
     except Exception as e:
         logger.error(f"Error deleting fingerprint user: {e}")
         return jsonify({'error': str(e)}), 500
+
+@app.route('/notification_popup.html')
+def notification_popup():
+    """Serve notification popup page"""
+    return send_file('templates/notification_popup.html')
 
 @app.route('/api/dashboard_stats')
 @login_required

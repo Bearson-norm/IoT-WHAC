@@ -217,3 +217,4 @@ The system is working correctly when you see:
 ---
 
 **Note**: The system is designed to be resilient and will continue working even if some components fail. The most important components for UAT are the MP3 notification system and MQTT communication.
+

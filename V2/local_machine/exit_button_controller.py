@@ -79,12 +79,16 @@ class ExitButtonController:
     def setup_mqtt(self):
         """Setup MQTT client"""
         try:
-            self.mqtt_client = mqtt.Client(client_id=f"exit_button_{STORE_ID}", clean_session=True)
+            # Use unique client ID to avoid conflicts
+            import time
+            unique_id = f"exit_button_{STORE_ID}_{int(time.time())}"
+            self.mqtt_client = mqtt.Client(client_id=unique_id, clean_session=True)
             self.mqtt_client.on_connect = self.on_mqtt_connect
             self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
             self.mqtt_client.on_message = self.on_mqtt_message
             
-            # Connect to MQTT broker
+            # Set keepalive and connection options for stability
+            self.mqtt_client.keepalive = 60
             self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, 60)
             self.mqtt_client.loop_start()
             
@@ -108,7 +112,8 @@ class ExitButtonController:
     def on_mqtt_disconnect(self, client, userdata, rc):
         """MQTT disconnection callback"""
         self.connected = False
-        logger.warning(f"Exit button MQTT client disconnected (code: {rc})")
+        if rc != 0:  # Only log unexpected disconnections
+            logger.warning(f"Exit button MQTT client disconnected (code: {rc})")
     
     def on_mqtt_message(self, client, userdata, msg):
         """Handle incoming MQTT messages"""
