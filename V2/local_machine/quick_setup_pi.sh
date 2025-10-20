@@ -116,3 +116,5 @@ echo ""
 echo "🚀 To start the full system, run:"
 echo "   python3 whac_integrated_system.py"
 
+
+

@@ -4,14 +4,14 @@ Exit Button Controller for WHAC Fingerprint System
 Handles exit warehouse flow with GPIO pushbutton trigger
 """
 
-import paho.mqtt.client as mqtt
 import json
 import logging
-import RPi.GPIO as GPIO
 import time
 import threading
 from datetime import datetime
 from config import *
+from mqtt_manager import get_mqtt_manager
+from gpio_manager import get_gpio_manager
 
 # Configure logging
 logging.basicConfig(
@@ -21,25 +21,18 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class ExitButtonController:
-    def __init__(self, exit_button_pin=24, mqtt_broker=MQTT_BROKER, mqtt_port=MQTT_PORT):
+    def __init__(self, exit_button_pin=24):
         """
         Initialize exit button controller
         
         Args:
             exit_button_pin: GPIO pin number for exit button (default: 24)
-            mqtt_broker: MQTT broker IP address
-            mqtt_port: MQTT broker port
         """
         self.exit_button_pin = exit_button_pin
-        self.mqtt_broker = mqtt_broker
-        self.mqtt_port = mqtt_port
-        self.mqtt_client = None
-        self.connected = False
+        self.mqtt_manager = get_mqtt_manager()
+        self.gpio_manager = get_gpio_manager()
         self.running = True
         self.button_pressed = False
-        self.last_press_time = 0
-        self.debounce_time = 0.5  # 500ms debounce
-        self.use_polling = False  # Flag for polling mode
         
         # MQTT Topics
         self.EXIT_TOPIC = f"WHAC/{STORE_ID}/exit"
@@ -48,78 +41,41 @@ class ExitButtonController:
         # Setup GPIO
         self.setup_gpio()
         
-        # Setup MQTT
+        # Setup MQTT subscriptions
         self.setup_mqtt()
-        
-        # Start button monitoring thread
-        self.button_thread = threading.Thread(target=self.monitor_button, daemon=True)
-        self.button_thread.start()
     
     def setup_gpio(self):
-        """Setup GPIO for exit button"""
+        """Setup GPIO for exit button using GPIO manager"""
         try:
-            GPIO.setwarnings(False)
-            GPIO.setmode(GPIO.BCM)
-            GPIO.setup(self.exit_button_pin, GPIO.IN, pull_up_down=GPIO.PUD_UP)
+            # Setup input pin with callback
+            import RPi.GPIO as GPIO
+            success = self.gpio_manager.setup_input_pin(
+                pin=self.exit_button_pin,
+                pull_up_down=GPIO.PUD_UP,
+                callback=self.button_callback,
+                debounce_time=300
+            )
             
-            # Add interrupt for button press with error handling
-            try:
-                GPIO.add_event_detect(self.exit_button_pin, GPIO.FALLING, 
-                                    callback=self.button_callback, bouncetime=300)
+            if success:
                 logger.info(f"✓ Exit button setup complete - Button on pin {self.exit_button_pin}")
-            except Exception as edge_error:
-                logger.warning(f"⚠️  Could not add edge detection: {edge_error}")
-                logger.info("🔄 Using polling mode for button detection")
-                self.use_polling = True
+            else:
+                logger.error(f"❌ Failed to setup exit button on pin {self.exit_button_pin}")
             
         except Exception as e:
             logger.error(f"GPIO setup error: {e}")
-            self.use_polling = True
     
     def setup_mqtt(self):
-        """Setup MQTT client"""
+        """Setup MQTT subscriptions"""
         try:
-            # Use unique client ID to avoid conflicts
-            import time
-            unique_id = f"exit_button_{STORE_ID}_{int(time.time())}"
-            self.mqtt_client = mqtt.Client(client_id=unique_id, clean_session=True)
-            self.mqtt_client.on_connect = self.on_mqtt_connect
-            self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
-            self.mqtt_client.on_message = self.on_mqtt_message
-            
-            # Set keepalive and connection options for stability
-            self.mqtt_client.keepalive = 60
-            self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, 60)
-            self.mqtt_client.loop_start()
-            
-            logger.info("✓ MQTT client setup complete for exit button")
+            # Subscribe to status topic for acknowledgments
+            self.mqtt_manager.subscribe(self.STATUS_TOPIC, self.on_mqtt_message)
+            logger.info("✓ MQTT subscriptions setup complete for exit button")
         except Exception as e:
             logger.error(f"MQTT setup error: {e}")
     
-    def on_mqtt_connect(self, client, userdata, flags, rc):
-        """MQTT connection callback"""
-        if rc == 0:
-            self.connected = True
-            logger.info("✅ Exit button MQTT client connected successfully")
-            
-            # Subscribe to status topic for acknowledgments
-            client.subscribe(self.STATUS_TOPIC, qos=1)
-            logger.info(f"✅ Subscribed to status topic: {self.STATUS_TOPIC}")
-        else:
-            logger.error(f"❌ Exit button MQTT connection failed with code {rc}")
-            self.connected = False
-    
-    def on_mqtt_disconnect(self, client, userdata, rc):
-        """MQTT disconnection callback"""
-        self.connected = False
-        if rc != 0:  # Only log unexpected disconnections
-            logger.warning(f"Exit button MQTT client disconnected (code: {rc})")
-    
-    def on_mqtt_message(self, client, userdata, msg):
+    def on_mqtt_message(self, topic, payload):
         """Handle incoming MQTT messages"""
         try:
-            topic = msg.topic
-            payload = json.loads(msg.payload.decode())
             logger.info(f"Received message on {topic}: {payload}")
             
             # Handle status acknowledgments
@@ -134,31 +90,10 @@ class ExitButtonController:
             logger.error(f"Error handling MQTT message: {e}")
     
     def button_callback(self, channel):
-        """Button press callback with debouncing"""
-        current_time = time.time()
-        
-        # Debounce check
-        if current_time - self.last_press_time < self.debounce_time:
-            return
-        
-        self.last_press_time = current_time
+        """Button press callback"""
         self.button_pressed = True
         logger.info("🔘 Exit button pressed!")
-    
-    def monitor_button(self):
-        """Monitor button state in separate thread"""
-        while self.running:
-            if self.button_pressed:
-                self.handle_exit_request()
-                self.button_pressed = False
-            elif self.use_polling:
-                # Polling mode - check button state directly
-                try:
-                    if GPIO.input(self.exit_button_pin) == GPIO.LOW:
-                        self.button_callback(self.exit_button_pin)
-                except:
-                    pass
-            time.sleep(0.1)
+        self.handle_exit_request()
     
     def handle_exit_request(self):
         """Handle exit button press"""
@@ -176,8 +111,8 @@ class ExitButtonController:
             }
             
             # Send exit request via MQTT
-            if self.connected:
-                self.mqtt_client.publish(self.EXIT_TOPIC, json.dumps(exit_data), qos=1)
+            if self.mqtt_manager.is_connected():
+                self.mqtt_manager.publish(self.EXIT_TOPIC, exit_data)
                 logger.info(f"📤 Exit request sent to topic: {self.EXIT_TOPIC}")
                 
                 # Send status update
@@ -197,8 +132,8 @@ class ExitButtonController:
                 "data": data
             }
             
-            if self.connected:
-                self.mqtt_client.publish(self.STATUS_TOPIC, json.dumps(status_data), qos=1)
+            if self.mqtt_manager.is_connected():
+                self.mqtt_manager.publish(self.STATUS_TOPIC, status_data)
                 logger.info(f"📤 Status update sent: {status}")
             else:
                 logger.error("❌ Cannot send status update - MQTT not connected")
@@ -226,15 +161,15 @@ class ExitButtonController:
             
             self.running = False
             
-            # Disconnect MQTT
-            if self.mqtt_client:
-                self.mqtt_client.loop_stop()
-                self.mqtt_client.disconnect()
-                logger.info("Exit button MQTT client disconnected")
+            # Unsubscribe from MQTT topics
+            if hasattr(self, 'mqtt_manager'):
+                self.mqtt_manager.unsubscribe(self.STATUS_TOPIC)
+                logger.info("Exit button MQTT subscriptions removed")
             
-            # Cleanup GPIO
-            GPIO.cleanup()
-            logger.info("Exit button GPIO cleaned up")
+            # Remove GPIO pin
+            if hasattr(self, 'gpio_manager'):
+                self.gpio_manager.remove_pin(self.exit_button_pin)
+                logger.info("Exit button GPIO pin removed")
             
         except Exception as e:
             logger.error(f"Cleanup error: {e}")

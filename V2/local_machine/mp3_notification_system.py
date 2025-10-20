@@ -4,7 +4,6 @@ MP3 Notification System for WHAC Fingerprint System
 Handles MP3 notifications for violations and user commands
 """
 
-import paho.mqtt.client as mqtt
 import json
 import logging
 import threading
@@ -13,6 +12,7 @@ import os
 import subprocess
 from datetime import datetime
 from config import *
+from mqtt_manager import get_mqtt_manager
 
 # Configure logging
 logging.basicConfig(
@@ -22,18 +22,11 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 class MP3NotificationSystem:
-    def __init__(self, mqtt_broker=MQTT_BROKER, mqtt_port=MQTT_PORT):
+    def __init__(self):
         """
         Initialize MP3 notification system
-        
-        Args:
-            mqtt_broker: MQTT broker IP address
-            mqtt_port: MQTT broker port
         """
-        self.mqtt_broker = mqtt_broker
-        self.mqtt_port = mqtt_port
-        self.mqtt_client = None
-        self.connected = False
+        self.mqtt_manager = get_mqtt_manager()
         self.running = True
         
         # Audio settings
@@ -63,7 +56,7 @@ class MP3NotificationSystem:
         # Create audio directory if it doesn't exist
         self.setup_audio_directory()
         
-        # Setup MQTT
+        # Setup MQTT subscriptions
         self.setup_mqtt()
         
         # Audio player thread
@@ -190,59 +183,30 @@ class MP3NotificationSystem:
             logger.error(f"Error creating placeholder files: {e}")
     
     def setup_mqtt(self):
-        """Setup MQTT client"""
+        """Setup MQTT subscriptions"""
         try:
-            # Use unique client ID to avoid conflicts
-            import time
-            unique_id = f"mp3_notification_{STORE_ID}_{int(time.time())}"
-            self.mqtt_client = mqtt.Client(client_id=unique_id, clean_session=True)
-            self.mqtt_client.on_connect = self.on_mqtt_connect
-            self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
-            self.mqtt_client.on_message = self.on_mqtt_message
-            
-            # Set keepalive and connection options for stability
-            self.mqtt_client.keepalive = 60
-            self.mqtt_client.connect(self.mqtt_broker, self.mqtt_port, 60)
-            self.mqtt_client.loop_start()
-            
-            logger.info("✓ MQTT client setup complete for MP3 notifications")
+            # Subscribe to notification and command topics
+            self.mqtt_manager.subscribe(self.NOTIFICATION_TOPIC, self.on_notification_message)
+            self.mqtt_manager.subscribe(self.COMMAND_TOPIC, self.on_command_message)
+            logger.info("✓ MQTT subscriptions setup complete for MP3 notifications")
         except Exception as e:
             logger.error(f"MQTT setup error: {e}")
     
-    def on_mqtt_connect(self, client, userdata, flags, rc):
-        """MQTT connection callback"""
-        if rc == 0:
-            self.connected = True
-            logger.info("✅ MP3 notification MQTT client connected successfully")
-            
-            # Subscribe to notification and command topics
-            client.subscribe(self.NOTIFICATION_TOPIC, qos=1)
-            client.subscribe(self.COMMAND_TOPIC, qos=1)
-            logger.info(f"✅ Subscribed to topics: {self.NOTIFICATION_TOPIC}, {self.COMMAND_TOPIC}")
-        else:
-            logger.error(f"❌ MP3 notification MQTT connection failed with code {rc}")
-            self.connected = False
-    
-    def on_mqtt_disconnect(self, client, userdata, rc):
-        """MQTT disconnection callback"""
-        self.connected = False
-        if rc != 0:  # Only log unexpected disconnections
-            logger.warning(f"MP3 notification MQTT client disconnected (code: {rc})")
-    
-    def on_mqtt_message(self, client, userdata, msg):
-        """Handle incoming MQTT messages"""
+    def on_notification_message(self, topic, payload):
+        """Handle notification messages"""
         try:
-            topic = msg.topic
-            payload = json.loads(msg.payload.decode())
-            logger.info(f"Received message on {topic}: {payload}")
-            
-            if "notification" in topic:
-                self.handle_notification(payload)
-            elif "command" in topic:
-                self.handle_command(payload)
-                
+            logger.info(f"Received notification on {topic}: {payload}")
+            self.handle_notification(payload)
         except Exception as e:
-            logger.error(f"Error handling MQTT message: {e}")
+            logger.error(f"Error handling notification message: {e}")
+    
+    def on_command_message(self, topic, payload):
+        """Handle command messages"""
+        try:
+            logger.info(f"Received command on {topic}: {payload}")
+            self.handle_command(payload)
+        except Exception as e:
+            logger.error(f"Error handling command message: {e}")
     
     def handle_notification(self, payload):
         """Handle notification messages"""
@@ -421,8 +385,8 @@ class MP3NotificationSystem:
                 "store_id": STORE_ID
             }
             
-            if self.connected:
-                self.mqtt_client.publish(self.STATUS_TOPIC, json.dumps(status_data), qos=1)
+            if self.mqtt_manager.is_connected():
+                self.mqtt_manager.publish(self.STATUS_TOPIC, status_data)
                 logger.info(f"📤 Audio status sent: {status}")
             else:
                 logger.error("❌ Cannot send audio status - MQTT not connected")
@@ -469,11 +433,11 @@ class MP3NotificationSystem:
             
             self.running = False
             
-            # Disconnect MQTT
-            if self.mqtt_client:
-                self.mqtt_client.loop_stop()
-                self.mqtt_client.disconnect()
-                logger.info("MP3 notification MQTT client disconnected")
+            # Unsubscribe from MQTT topics
+            if hasattr(self, 'mqtt_manager'):
+                self.mqtt_manager.unsubscribe(self.NOTIFICATION_TOPIC)
+                self.mqtt_manager.unsubscribe(self.COMMAND_TOPIC)
+                logger.info("MP3 notification MQTT subscriptions removed")
             
             logger.info("MP3 notification system cleaned up")
             

@@ -20,6 +20,7 @@ from config import *
 from fingerprint_simple_client import SimpleFingerprintClient
 from exit_button_controller import ExitButtonController
 from mp3_notification_system import MP3NotificationSystem
+from mqtt_manager import get_mqtt_manager
 
 # Configure logging
 logging.basicConfig(
@@ -37,8 +38,13 @@ class WHACIntegratedSystem:
         """Initialize the integrated WHAC system"""
         self.running = True
         self.components = {}
+        self.shutdown_lock = threading.Lock()
+        self.shutdown_called = False
         
         logger.info("🚀 Initializing WHAC Integrated System...")
+        
+        # Get shared MQTT manager
+        self.mqtt_manager = get_mqtt_manager()
         
         # Initialize all system components
         self.initialize_components()
@@ -189,17 +195,30 @@ class WHACIntegratedSystem:
     
     def signal_handler(self, signum, frame):
         """Handle shutdown signals"""
+        with self.shutdown_lock:
+            if self.shutdown_called:
+                logger.warning("🛑 Shutdown already in progress, ignoring signal")
+                return
+            self.shutdown_called = True
+            
         logger.info(f"🛑 Received signal {signum}, initiating graceful shutdown...")
         self.shutdown()
     
     def shutdown(self):
         """Gracefully shutdown the system"""
+        with self.shutdown_lock:
+            if self.shutdown_called and not self.running:
+                logger.warning("🛑 Shutdown already completed, ignoring duplicate call")
+                return
+                
         try:
             logger.info("🛑 Shutting down WHAC Integrated System...")
             self.running = False
             
-            # Cleanup all components
-            for name, component in self.components.items():
+            # Cleanup all components in reverse order
+            component_names = list(self.components.keys())
+            for name in reversed(component_names):
+                component = self.components.get(name)
                 if component and hasattr(component, 'cleanup'):
                     try:
                         logger.info(f"🧹 Cleaning up {name}...")
@@ -207,6 +226,15 @@ class WHACIntegratedSystem:
                         logger.info(f"✅ {name} cleaned up successfully")
                     except Exception as e:
                         logger.error(f"❌ Error cleaning up {name}: {e}")
+            
+            # Cleanup MQTT manager last
+            if hasattr(self, 'mqtt_manager'):
+                try:
+                    logger.info("🧹 Cleaning up MQTT manager...")
+                    self.mqtt_manager.cleanup()
+                    logger.info("✅ MQTT manager cleaned up successfully")
+                except Exception as e:
+                    logger.error(f"❌ Error cleaning up MQTT manager: {e}")
             
             logger.info("✅ WHAC Integrated System shutdown complete")
             
@@ -263,4 +291,6 @@ def main():
 
 if __name__ == "__main__":
     main()
+
+
 

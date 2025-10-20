@@ -351,3 +351,5 @@ launchctl list | grep whac
 
 **Note**: The setup scripts are designed to be robust and handle most common scenarios. If you encounter issues, try the manual setup steps or check the troubleshooting section for your specific operating system.
 
+
+
