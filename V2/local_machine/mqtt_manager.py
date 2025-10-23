@@ -259,3 +259,6 @@ mqtt_manager = MQTTManager()
 def get_mqtt_manager():
     """Get the global MQTT manager instance"""
     return mqtt_manager
+
+
+

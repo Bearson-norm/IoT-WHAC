@@ -1,0 +1,28 @@
+# Dual AS608 Fingerprint Sensor System Requirements (3.3V)
+# Based on existing system requirements
+
+# Core dependencies
+pyserial>=3.5
+paho-mqtt>=1.6.0
+adafruit-circuitpython-fingerprint>=1.0.0
+
+# Database
+# sqlite3 is included with Python standard library
+
+# GPIO control (for Raspberry Pi)
+RPi.GPIO>=0.7.0
+
+# Optional: For enhanced functionality
+# numpy>=1.21.0  # For advanced image processing
+# pillow>=8.0.0  # For image handling
+# requests>=2.25.0  # For HTTP requests
+
+# Development and testing
+# pytest>=6.0.0  # For testing
+# pytest-cov>=2.10.0  # For coverage testing
+
+# Logging and monitoring
+# psutil>=5.8.0  # For system monitoring
+
+# Note: These packages are compatible with 3.3V AS608 sensors
+# No additional voltage level conversion libraries needed

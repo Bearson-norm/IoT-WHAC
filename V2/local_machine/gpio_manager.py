@@ -280,3 +280,6 @@ gpio_manager = GPIOManager()
 def get_gpio_manager():
     """Get the global GPIO manager instance"""
     return gpio_manager
+
+
+

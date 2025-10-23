@@ -23,6 +23,7 @@ def test_mqtt_manager():
         logger.info("🧪 Testing MQTT Manager...")
         
         from mqtt_manager import get_mqtt_manager
+        from config import STORE_ID
         
         mqtt_manager = get_mqtt_manager()
         
@@ -63,6 +64,7 @@ def test_gpio_manager():
         logger.info("🧪 Testing GPIO Manager...")
         
         from gpio_manager import get_gpio_manager
+        import RPi.GPIO as GPIO
         
         gpio_manager = get_gpio_manager()
         

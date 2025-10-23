@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-WHAC Optimized System - Resource-efficient version
-Minimizes network, I/O, and CPU usage
+WHAC Simple System - Simplified version for debugging
+Handles common Raspberry Pi issues gracefully
 """
 
 import logging
@@ -13,25 +13,24 @@ import os
 from datetime import datetime
 from config import *
 
-# Configure logging with reduced verbosity
+# Configure logging
 logging.basicConfig(
-    level=logging.WARNING,  # Reduced from INFO to WARNING
+    level=getattr(logging, LOG_LEVEL),
     format='%(asctime)s - %(levelname)s - %(message)s',
     handlers=[
-        logging.FileHandler('whac_optimized_system.log'),
+        logging.FileHandler('whac_simple_system.log'),
         logging.StreamHandler(sys.stdout)
     ]
 )
 logger = logging.getLogger(__name__)
 
-class WHACOptimizedSystem:
+class WHACSimpleSystem:
     def __init__(self):
-        """Initialize the optimized WHAC system"""
+        """Initialize the simplified WHAC system"""
         self.running = True
         self.components = {}
-        self.start_time = time.time()
         
-        logger.info("🚀 Initializing WHAC Optimized System...")
+        logger.info("🚀 Initializing WHAC Simple System...")
         
         # Initialize components with error handling
         self.initialize_components()
@@ -79,11 +78,11 @@ class WHACOptimizedSystem:
             logger.error(f"❌ Error initializing components: {e}")
     
     def start_system(self):
-        """Start the optimized system"""
+        """Start the simplified system"""
         try:
-            logger.info("🚀 Starting WHAC Optimized System...")
+            logger.info("🚀 Starting WHAC Simple System...")
             
-            # Start system monitoring with reduced frequency
+            # Start system monitoring
             monitor_thread = threading.Thread(
                 target=self.system_monitor,
                 daemon=True,
@@ -100,19 +99,19 @@ class WHACOptimizedSystem:
                 )
                 fingerprint_thread.start()
             
-            logger.info("✅ WHAC Optimized System started successfully!")
+            logger.info("✅ WHAC Simple System started successfully!")
             self.log_system_status()
             
             # Keep main thread alive
             while self.running:
-                time.sleep(5)  # Reduced from 1 second to 5 seconds
+                time.sleep(1)
                 
         except Exception as e:
             logger.error(f"❌ Error starting system: {e}")
             self.shutdown()
     
     def run_fingerprint_scanning(self):
-        """Run fingerprint scanning loop with reduced frequency"""
+        """Run fingerprint scanning loop"""
         try:
             fingerprint_client = self.components.get('fingerprint')
             if not fingerprint_client:
@@ -126,17 +125,17 @@ class WHACOptimizedSystem:
                     # Run fingerprint scan with error handling
                     if hasattr(fingerprint_client, 'scan_fingerprint_standby'):
                         fingerprint_client.scan_fingerprint_standby()
-                    time.sleep(2)  # Increased from 1 second to 2 seconds
+                    time.sleep(1)  # Longer delay to reduce errors
                     
                 except Exception as e:
                     logger.debug(f"Fingerprint scan error: {e}")
-                    time.sleep(10)  # Increased from 5 seconds to 10 seconds
+                    time.sleep(5)  # Wait longer on error
                     
         except Exception as e:
             logger.error(f"❌ Fatal error in fingerprint scanning thread: {e}")
     
     def system_monitor(self):
-        """Monitor system health with reduced frequency"""
+        """Monitor system health and status"""
         try:
             logger.info("📊 Starting system monitor...")
             
@@ -145,21 +144,21 @@ class WHACOptimizedSystem:
                     # Check component health
                     self.check_component_health()
                     
-                    # Log system status every 10 minutes (reduced from 5 minutes)
-                    if int(time.time()) % 600 == 0:
+                    # Log system status every 5 minutes
+                    if int(time.time()) % 300 == 0:
                         self.log_system_status()
                     
-                    time.sleep(60)  # Increased from 30 seconds to 60 seconds
+                    time.sleep(30)  # Check every 30 seconds
                     
                 except Exception as e:
                     logger.error(f"❌ Error in system monitor: {e}")
-                    time.sleep(120)  # Increased from 60 seconds to 120 seconds
+                    time.sleep(60)
                     
         except Exception as e:
             logger.error(f"❌ Fatal error in system monitor thread: {e}")
     
     def check_component_health(self):
-        """Check health of all system components with reduced logging"""
+        """Check health of all system components"""
         try:
             # Check MP3 system
             if self.components.get('mp3_system'):
@@ -180,25 +179,30 @@ class WHACOptimizedSystem:
             logger.error(f"❌ Error checking component health: {e}")
     
     def log_system_status(self):
-        """Log current system status with reduced frequency"""
+        """Log current system status"""
         try:
-            uptime = time.time() - self.start_time
-            logger.info(f"📊 System Status - Uptime: {uptime:.0f}s")
+            logger.info("📊 System Status Report:")
+            logger.info(f"   - Timestamp: {datetime.now().isoformat()}")
+            logger.info(f"   - Store ID: {STORE_ID}")
+            logger.info(f"   - MQTT Broker: {MQTT_BROKER}:{MQTT_PORT}")
             
             active_components = 0
             for name, component in self.components.items():
                 if component:
                     active_components += 1
+                    logger.info(f"   - {name}: ✅ Active")
+                else:
+                    logger.info(f"   - {name}: ❌ Inactive")
             
-            logger.info(f"📊 Active Components: {active_components}/{len(self.components)}")
+            logger.info(f"   - Components Active: {active_components}/{len(self.components)}")
             
         except Exception as e:
             logger.error(f"❌ Error logging system status: {e}")
     
     def test_components(self):
-        """Test all available components with reduced output"""
+        """Test all available components"""
         try:
-            logger.info("🧪 Testing WHAC Optimized System components...")
+            logger.info("🧪 Testing WHAC Simple System components...")
             
             # Test MP3 system
             if self.components.get('mp3_system'):
@@ -229,7 +233,7 @@ class WHACOptimizedSystem:
     def shutdown(self):
         """Gracefully shutdown the system"""
         try:
-            logger.info("🛑 Shutting down WHAC Optimized System...")
+            logger.info("🛑 Shutting down WHAC Simple System...")
             self.running = False
             
             # Cleanup all components
@@ -242,7 +246,7 @@ class WHACOptimizedSystem:
                     except Exception as e:
                         logger.error(f"❌ Error cleaning up {name}: {e}")
             
-            logger.info("✅ WHAC Optimized System shutdown complete")
+            logger.info("✅ WHAC Simple System shutdown complete")
             
         except Exception as e:
             logger.error(f"❌ Error during shutdown: {e}")
@@ -252,8 +256,9 @@ class WHACOptimizedSystem:
 def main():
     """Main function"""
     try:
-        # Create and start the optimized system
-        system = WHACOptimizedSystem()
+        # Create and start the simplified system
+        system = WHACSimpleSystem()
+        system.start_time = time.time()
         
         # Run component tests
         system.test_components()
@@ -271,6 +276,7 @@ def main():
 
 if __name__ == "__main__":
     main()
+
 
 
 
