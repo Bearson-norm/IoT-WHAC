@@ -102,8 +102,8 @@ class DualSensorManager:
             
         elif os.name == 'nt':  # Windows
             try:
-                import serial.tools.list_ports
-                available_ports = [port.device for port in serial.tools.list_ports.comports()]
+                import serial.tools.list_ports as list_ports
+                available_ports = [port.device for port in list_ports.comports()]
                 possible_ports = available_ports
                 logger.info(f"📋 Windows COM ports: {possible_ports}")
             except ImportError:
