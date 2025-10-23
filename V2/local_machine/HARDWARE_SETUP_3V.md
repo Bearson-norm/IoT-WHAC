@@ -64,24 +64,35 @@ AS608 Sensor 2:
 - Kabel jumper
 - Raspberry Pi 4
 
-### **Koneksi GPIO:**
+### **Koneksi GPIO (HATI-HATI: GPIO18 untuk RELAY!):**
 ```
 Raspberry Pi GPIO Layout:
 ┌─────────────────────────────────────────┐
-│ 3.3V  │ 5V   │ GPIO2 │ 5V   │ GPIO3 │ GND │ GPIO4 │ GPIO14 │ GND │ GPIO15 │ GPIO17 │ GPIO18 │ GND │ GPIO27 │ GPIO22 │ 3.3V │ GPIO23 │ GPIO24 │ GND │ GPIO25 │ GPIO8  │ GPIO7  │ GPIO1 │ GND │ GPIO12 │ GND │ GPIO16 │ GPIO20 │ GPIO21 │ GND │ GPIO26 │ GPIO19 │ GPIO13 │ GND │ GPIO6  │ GPIO5  │ GND │ GPIO11 │ GPIO10 │ GPIO9  │ GND │ GPIO0  │ GPIO1  │ GPIO2  │ 3.3V │ GPIO3  │ GPIO4  │ GND │ GPIO5  │
+│ 3.3V  │ 5V   │ GPIO2 │ 5V   │ GPIO3 │ GND │
+│ GPIO4 │ GPIO14│ GPIO15│ GPIO17│ GPIO18│ GND │ ← GPIO18 = RELAY!
+│ GPIO27│ GPIO22│ 3.3V  │ GPIO23│ GPIO24│ GND │
+│ GPIO25│ GPIO8 │ GPIO7 │ GPIO1 │ GND   │ GPIO12│
+│ GND   │ GPIO16│ GPIO20│ GPIO21│ GND   │ GPIO26│ ← GPIO20,21 = Sensor 2
+│ GPIO19│ GPIO13│ GPIO6 │ GPIO5 │ GND   │ GPIO11│ ← GPIO19 = Exit Button
+│ GPIO10│ GPIO9 │ GND   │ GPIO0 │ GPIO1 │ GPIO2 │
 └─────────────────────────────────────────┘
 
 Sensor 1 (Hardware UART):
-AS608 VCC → Pi 3.3V
-AS608 GND → Pi GND
-AS608 TX  → Pi GPIO15 (RXD)
-AS608 RX  → Pi GPIO14 (TXD)
+AS608 VCC → Pi 3.3V (Pin 1)
+AS608 GND → Pi GND (Pin 6)
+AS608 TX  → Pi GPIO15 (Pin 10) - Hardware UART RX
+AS608 RX  → Pi GPIO14 (Pin 8)  - Hardware UART TX
 
-Sensor 2 (Software UART):
-AS608 VCC → Pi 3.3V
-AS608 GND → Pi GND
-AS608 TX  → Pi GPIO19 (Software RX)
-AS608 RX  → Pi GPIO18 (Software TX)
+Sensor 2 (Software UART - HINDARI GPIO18!):
+AS608 VCC → Pi 3.3V (Pin 1)
+AS608 GND → Pi GND (Pin 14)
+AS608 TX  → Pi GPIO20 (Pin 38) - Software UART RX
+AS608 RX  → Pi GPIO21 (Pin 40) - Software UART TX
+
+⚠️  PERHATIKAN:
+- GPIO18 = RELAY CONTROL (JANGAN GUNAKAN!)
+- GPIO19 = Exit Button (jika digunakan)
+- GPIO20/21 = Sensor 2 (AMAN)
 ```
 
 ### **Konfigurasi GPIO:**

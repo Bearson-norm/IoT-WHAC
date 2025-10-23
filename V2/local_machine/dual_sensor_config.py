@@ -142,9 +142,18 @@ HARDWARE_CONFIG = {
     "voltage": "3.3V",
     "level_shifter_required": False,  # No level shifter needed for 3.3V
     "gpio_pins": {
-        "relay": RELAY_CONFIG["pin"],
+        "relay": RELAY_CONFIG["pin"],  # GPIO18 - Relay control
         "exit_button": 16,  # GPIO pin for exit button (if used)
-        "led_status": 21    # GPIO pin for status LED (if used)
+        "led_status": 21,   # GPIO pin for status LED (if used)
+        # GPIO pins for dual AS608 sensors
+        "sensor_1": {
+            "tx": 14,  # GPIO14 - Hardware UART TX
+            "rx": 15   # GPIO15 - Hardware UART RX
+        },
+        "sensor_2": {
+            "tx": 20,  # GPIO20 - Software UART TX (alternative to GPIO18)
+            "rx": 21   # GPIO21 - Software UART RX (alternative to GPIO19)
+        }
     },
     "power_requirements": {
         "as608_current": "120mA",  # Typical current for AS608 at 3.3V
