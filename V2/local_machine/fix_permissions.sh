@@ -49,3 +49,5 @@ echo ""
 echo "If sensors are detected, run:"
 echo "  python3 dual_fingerprint_simple_client.py"
 echo "=========================================="
+
+

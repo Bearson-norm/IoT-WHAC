@@ -34,3 +34,5 @@ echo "2. Log out and log back in"
 echo "3. Run: python3 test_sensors_simple.py"
 echo "4. If sensors are detected, run: python3 dual_fingerprint_simple_client.py"
 echo "=========================================="
+
+

@@ -144,3 +144,5 @@ pip3 install pyserial paho-mqtt adafruit-circuitpython-fingerprint RPi.GPIO
 6. **Run System**: `./run_dual_sensors.sh`
 
 Sistem dual sensor 3.3V siap digunakan dengan performa optimal dan tidak memerlukan level shifter!
+
+

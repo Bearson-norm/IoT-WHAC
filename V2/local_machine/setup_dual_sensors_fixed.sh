@@ -114,3 +114,5 @@ echo "✓ Direct GPIO connection"
 echo "✓ Lower power consumption"
 echo "✓ More stable operation"
 echo "=========================================="
+
+

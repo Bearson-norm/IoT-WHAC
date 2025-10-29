@@ -58,3 +58,5 @@ echo "1. Connect second USB-to-Serial adapter"
 echo "2. Check power supply for AS608 (3.3V)"
 echo "3. Verify wiring connections"
 echo "=========================================="
+
+

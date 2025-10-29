@@ -27,3 +27,5 @@ echo ""
 echo "After logging back in, run:"
 echo "  python3 dual_fingerprint_simple_client.py"
 echo "=========================================="
+
+
