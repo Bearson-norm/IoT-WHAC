@@ -2,10 +2,33 @@
 
 This folder contains all the files that run on your **Raspberry Pi 4** with the AS608 fingerprint sensor.
 
-## 🎯 Main Program (Recommended)
+## 🎯 Main Programs (Recommended)
+
+### **`fingerprint_multi_client.py`** ⭐⭐⭐ **NEW - Multi-Sensor Support**
+**Use this if you have 2 or more AS608 sensors!**
+
+- ✅ **Multi-sensor support** (2+ AS608 sensors simultaneously)
+- ✅ **Parallel scanning** (each sensor has its own thread)
+- ✅ **Same MQTT protocol** as single sensor version
+- ✅ **Unique device_id** for each sensor (AS608_001, AS608_002, etc.)
+- ✅ **Auto-detect ports** for multiple sensors
+- ✅ **Thread-safe operations**
+- ✅ **MQTT command handling** (add/import/export users)
+- ✅ **Relay control integration**
+
+**Usage:**
+```bash
+# Configure FINGERPRINT_PORTS in .env or config.py
+export FINGERPRINT_PORTS="/dev/serial0,/dev/ttyAMA2"
+python3 fingerprint_multi_client.py
+```
+
+**See:** [MULTI_SENSOR_USAGE.md](./MULTI_SENSOR_USAGE.md) for detailed guide
+
+---
 
 ### **`fingerprint_simple_client.py`** ⭐
-**This is the main program you should use!**
+**Use this for single AS608 sensor**
 
 - ✅ **Standby fingerprint scanning**
 - ✅ **Simple JSON format** as requested

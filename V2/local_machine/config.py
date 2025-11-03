@@ -16,7 +16,15 @@ MQTT_KEEPALIVE = int(os.getenv("MQTT_KEEPALIVE", "60"))
 MQTT_QOS = int(os.getenv("MQTT_QOS", "1"))
 
 # Fingerprint Sensor Configuration
+# For single sensor:
 FINGERPRINT_PORT = os.getenv("FINGERPRINT_PORT", "/dev/serial0")  # Raspberry Pi UART - change to /dev/ttyUSB0 for USB adapter
+
+# For multiple sensors (comma-separated ports):
+# Example: FINGERPRINT_PORTS="/dev/ttyUSB0,/dev/ttyUSB1" or "/dev/serial0,/dev/serial1"
+FINGERPRINT_PORTS = os.getenv("FINGERPRINT_PORTS", "").split(",") if os.getenv("FINGERPRINT_PORTS") else []
+# Filter out empty strings
+FINGERPRINT_PORTS = [p.strip() for p in FINGERPRINT_PORTS if p.strip()]
+
 BAUD_RATE = int(os.getenv("BAUD_RATE", "57600"))
 CONFIDENCE_THRESHOLD = int(os.getenv("CONFIDENCE_THRESHOLD", "50"))  # Minimum confidence for fingerprint match
 

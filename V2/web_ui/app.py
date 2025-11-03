@@ -291,11 +291,17 @@ def handle_scan_message(payload):
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
 def handle_enrollment_response(payload):
-    """Handle enrollment response from local machine"""
+    """Handle enrollment response from local machine
+    
+    FIXED: Enhanced notification with better error handling and ensured
+    modal popup always appears for successful enrollments.
+    """
     try:
+        logger.info("=" * 80)
         logger.info("📥 ENROLLMENT RESPONSE RECEIVED")
         logger.info(f"   Status: {payload.get('status')}")
         logger.info(f"   Message: {payload.get('data', {}).get('message')}")
+        logger.info(f"   Full payload: {payload}")
         
         status = payload.get('status')
         data = payload.get('data', {})
@@ -305,6 +311,9 @@ def handle_enrollment_response(payload):
         if status == 'success' and fingerprint_id and user_name:
             # Add user to PostgreSQL database
             conn = get_db_connection()
+            db_success = False
+            db_error_msg = None
+            
             if conn:
                 try:
                     cursor = conn.cursor()
@@ -319,35 +328,77 @@ def handle_enrollment_response(payload):
                     
                     conn.commit()
                     conn.close()
+                    db_success = True
                     
                     logger.info(f"✅ User added to PostgreSQL database: {user_name} (ID: {fingerprint_id})")
                     
-                    # Emit success notification to web UI
-                    notification_data = {
-                        'type': 'enrollment_success',
-                        'message': f'User {user_name} enrolled successfully!',
-                        'user_id': fingerprint_id,
-                        'username': user_name
-                    }
-                    socketio.start_background_task(emit_notification_task, notification_data)
-                    
                 except Exception as db_error:
                     logger.error(f"❌ Error adding user to database: {db_error}")
+                    db_error_msg = str(db_error)
                     conn.rollback()
                     conn.close()
+            else:
+                logger.error("❌ Failed to connect to database")
+                db_error_msg = "Database connection failed"
+            
+            # Emit success notification to web UI (even if DB failed, enrollment was successful)
+            if db_success:
+                notification_data = {
+                    'type': 'enrollment_success',
+                    'message': f'User {user_name} enrolled successfully!',
+                    'user_id': fingerprint_id,
+                    'username': user_name,
+                    'fingerprint_id': fingerprint_id,
+                    'timestamp': datetime.now().isoformat()
+                }
+            else:
+                # Enrollment succeeded but database failed
+                notification_data = {
+                    'type': 'enrollment_success_db_error',
+                    'message': f'User {user_name} enrolled but database save failed: {db_error_msg}',
+                    'user_id': fingerprint_id,
+                    'username': user_name,
+                    'fingerprint_id': fingerprint_id,
+                    'error': db_error_msg,
+                    'timestamp': datetime.now().isoformat()
+                }
+            
+            logger.info(f"📤 Emitting enrollment notification: {notification_data['type']}")
+            socketio.start_background_task(emit_notification_task, notification_data)
+            logger.info("=" * 80)
+            
         else:
-            logger.error(f"❌ Enrollment failed: {data.get('message', 'Unknown error')}")
+            error_message = data.get('message', 'Unknown error')
+            logger.error(f"❌ Enrollment failed: {error_message}")
+            
             # Emit error notification to web UI
             notification_data = {
                 'type': 'enrollment_error',
-                'message': data.get('message', 'Enrollment failed')
+                'message': f'Enrollment failed: {error_message}',
+                'error': error_message,
+                'timestamp': datetime.now().isoformat()
             }
+            
+            logger.info(f"📤 Emitting error notification")
             socketio.start_background_task(emit_notification_task, notification_data)
+            logger.info("=" * 80)
         
     except Exception as e:
         logger.error(f"❌ Error handling enrollment response: {e}")
         import traceback
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        
+        # Emit error notification even on exception
+        try:
+            notification_data = {
+                'type': 'enrollment_error',
+                'message': f'Error processing enrollment response: {str(e)}',
+                'error': str(e),
+                'timestamp': datetime.now().isoformat()
+            }
+            socketio.start_background_task(emit_notification_task, notification_data)
+        except:
+            pass  # Don't fail if notification fails too
 
 def process_incoming_scan(data):
     """Process incoming scan data and log to database"""

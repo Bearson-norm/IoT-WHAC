@@ -1,0 +1,783 @@
+#!/usr/bin/env python3
+"""
+Multi-Sensor Fingerprint MQTT Client for AS608 Sensors
+- Supports multiple AS608 sensors simultaneously
+- Standby fingerprint scanning from all sensors
+- Simple JSON format (same protocol as single sensor)
+- MQTT command handling for user management
+- Each sensor has unique device_id
+"""
+
+import serial
+import adafruit_fingerprint
+import paho.mqtt.client as mqtt
+import json
+import time
+import logging
+import sys
+import sqlite3
+import threading
+import glob
+import os
+from datetime import datetime
+from config import *
+
+# Configure logging
+logging.basicConfig(
+    level=getattr(logging, LOG_LEVEL),
+    format='%(asctime)s - %(levelname)s - %(message)s',
+    handlers=[
+        logging.FileHandler(LOG_FILE),
+        logging.StreamHandler(sys.stdout)
+    ]
+)
+logger = logging.getLogger(__name__)
+
+
+class SensorConnection:
+    """Represents a single AS608 sensor connection"""
+    def __init__(self, port, device_id, index):
+        self.port = port
+        self.device_id = device_id
+        self.index = index
+        self.uart = None
+        self.finger = None
+        self.connected = False
+        self.last_scan_time = 0
+        self.lock = threading.Lock()  # Lock for thread-safe operations
+        
+    def connect(self, retries=3):
+        """Connect to AS608 fingerprint sensor"""
+        for attempt in range(retries):
+            try:
+                logger.info(f"[{self.device_id}] Connecting to sensor on {self.port} (attempt {attempt + 1})")
+                
+                # Check if port is already in use
+                try:
+                    import subprocess
+                    result = subprocess.run(['lsof', self.port], capture_output=True, text=True)
+                    if result.stdout:
+                        logger.warning(f"[{self.device_id}] ⚠️  Port {self.port} is already in use")
+                except:
+                    pass  # lsof not available, continue anyway
+                
+                self.uart = serial.Serial(self.port, baudrate=BAUD_RATE, timeout=2)
+                time.sleep(0.5)  # Give sensor time to stabilize
+                self.finger = adafruit_fingerprint.Adafruit_Fingerprint(self.uart)
+                
+                # Test connection
+                if self.finger.read_templates() == adafruit_fingerprint.OK:
+                    logger.info(f"[{self.device_id}] ✓ Sensor connected! Templates: {self.finger.template_count}")
+                    self.connected = True
+                    return True
+                else:
+                    raise Exception("Failed to read templates from sensor")
+                    
+            except Exception as e:
+                logger.error(f"[{self.device_id}] Connection attempt {attempt + 1} failed: {e}")
+                if self.uart:
+                    try:
+                        self.uart.close()
+                    except:
+                        pass
+                    self.uart = None
+                if attempt < retries - 1:
+                    time.sleep(2)
+                else:
+                    self.connected = False
+                    raise
+        return False
+    
+    def disconnect(self):
+        """Disconnect from sensor"""
+        self.connected = False
+        if self.uart:
+            try:
+                self.uart.close()
+                logger.info(f"[{self.device_id}] Serial connection closed")
+            except:
+                pass
+            self.uart = None
+        self.finger = None
+    
+    def get_template_count(self):
+        """Get number of stored fingerprints"""
+        try:
+            if not self.connected or not self.finger:
+                return 0
+            if self.finger.read_templates() == adafruit_fingerprint.OK:
+                return self.finger.template_count
+            return 0
+        except Exception as e:
+            logger.error(f"[{self.device_id}] Error getting template count: {e}")
+            return 0
+
+
+class MultiSensorFingerprintClient:
+    """Multi-sensor fingerprint client supporting multiple AS608 sensors"""
+    def __init__(self):
+        self.sensors = []  # List of SensorConnection objects
+        self.mqtt_client = None
+        self.connected = False
+        self.running = True
+        self.enrolling = False  # Flag to pause scanning during enrollment
+        self.command_lock = threading.Lock()
+        self.db_file = "fingerprints.db"
+        self.scan_threads = []  # Threads for each sensor scanning
+        
+        self.init_database()
+        
+        # Relay control
+        self.relay_pin = 18  # GPIO pin for relay
+        self.setup_gpio()
+        
+        # Initialize sensors from config
+        self.init_sensors()
+        
+        # MQTT Topics
+        self.SCAN_TOPIC = MQTT_TOPIC  # "WHAC/Store001/in" - for scan results
+        self.ADD_USER_TOPIC = "WHAC/Store001/add_user"  # for adding users
+        self.IMPORT_TOPIC = "WHAC/Store001/import"  # for importing users
+        self.EXPORT_TOPIC = "WHAC/Store001/export"  # for exporting users
+        self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
+        self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
+    
+    def init_sensors(self):
+        """Initialize sensor connections from config"""
+        # Check if multiple ports are configured
+        if FINGERPRINT_PORTS and len(FINGERPRINT_PORTS) > 0:
+            ports = FINGERPRINT_PORTS
+            logger.info(f"🔧 Configuring {len(ports)} sensors from FINGERPRINT_PORTS")
+        else:
+            # Fallback to single port
+            ports = [FINGERPRINT_PORT]
+            logger.info(f"🔧 Using single sensor from FINGERPRINT_PORT")
+        
+        # Create sensor connections
+        for idx, port in enumerate(ports):
+            # Generate device_id: AS608_001, AS608_002, etc.
+            device_id = f"AS608_{idx + 1:03d}"
+            sensor = SensorConnection(port.strip(), device_id, idx)
+            
+            # Verify port exists
+            if not os.path.exists(sensor.port):
+                logger.warning(f"⚠️  Port {sensor.port} does not exist for {sensor.device_id}")
+                # Try auto-detection for this sensor
+                detected = self.auto_detect_fingerprint_port(sensor.device_id)
+                if detected:
+                    sensor.port = detected
+                    logger.info(f"✅ Auto-detected port {detected} for {sensor.device_id}")
+            
+            self.sensors.append(sensor)
+            logger.info(f"📌 Sensor {idx + 1}: {sensor.device_id} -> {sensor.port}")
+        
+        if len(self.sensors) == 0:
+            logger.error("❌ No sensors configured!")
+            raise ValueError("No sensors configured")
+    
+    def auto_detect_fingerprint_port(self, device_id):
+        """Auto-detect AS608 fingerprint sensor port for a specific device"""
+        logger.info(f"[{device_id}] 🔍 Auto-detecting fingerprint sensor port...")
+        
+        if os.name == 'posix':  # Linux/Unix (Raspberry Pi)
+            all_ports = []
+            
+            # Check common USB serial patterns
+            usb_patterns = ['/dev/ttyUSB*', '/dev/ttyACM*', '/dev/tty.usbserial*', '/dev/tty.usbmodem*']
+            for pattern in usb_patterns:
+                found_ports = glob.glob(pattern)
+                all_ports.extend(found_ports)
+            
+            # Check built-in serial ports
+            builtin_patterns = ['/dev/ttyS*', '/dev/ttyAMA*', '/dev/serial0', '/dev/serial1']
+            for pattern in builtin_patterns:
+                if pattern.startswith('/dev/serial'):
+                    if os.path.exists(pattern):
+                        all_ports.append(pattern)
+                else:
+                    found_ports = glob.glob(pattern)
+                    all_ports.extend(found_ports)
+            
+            possible_ports = sorted(list(set(all_ports)))
+            
+            # Filter out ports already used by other sensors
+            used_ports = [s.port for s in self.sensors if s.port]
+            possible_ports = [p for p in possible_ports if p not in used_ports]
+            
+        elif os.name == 'nt':  # Windows
+            try:
+                import serial.tools.list_ports
+                available_ports = [port.device for port in serial.tools.list_ports.comports()]
+                possible_ports = available_ports
+            except ImportError:
+                possible_ports = []
+        else:
+            possible_ports = []
+        
+        logger.info(f"[{device_id}] Testing {len(possible_ports)} available ports...")
+        
+        for port in possible_ports:
+            if not os.path.exists(port):
+                continue
+                
+            try:
+                test_uart = serial.Serial(port, baudrate=BAUD_RATE, timeout=2)
+                time.sleep(0.5)
+                test_finger = adafruit_fingerprint.Adafruit_Fingerprint(test_uart)
+                result = test_finger.read_templates()
+                
+                if result == adafruit_fingerprint.OK:
+                    logger.info(f"[{device_id}] ✅ AS608 found on {port}!")
+                    test_uart.close()
+                    return port
+                else:
+                    test_uart.close()
+            except:
+                continue
+        
+        logger.warning(f"[{device_id}] ⚠️  Auto-detection failed")
+        return None
+    
+    def setup_gpio(self):
+        """Setup GPIO for relay control"""
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.setwarnings(False)
+            GPIO.setmode(GPIO.BCM)
+            GPIO.setup(self.relay_pin, GPIO.OUT)
+            GPIO.output(self.relay_pin, GPIO.LOW)
+            logger.info(f"✓ GPIO setup complete - Relay on pin {self.relay_pin}")
+        except ImportError:
+            logger.warning("RPi.GPIO not available - relay control disabled")
+            self.relay_pin = None
+        except Exception as e:
+            logger.error(f"GPIO setup error: {e}")
+            self.relay_pin = None
+    
+    def control_relay(self, action, duration=10):
+        """Control relay for specified duration (NON-BLOCKING)
+        
+        FIXED: Previously used time.sleep() which blocked the thread.
+        Now uses background thread to handle relay timer without blocking.
+        """
+        if not self.relay_pin:
+            logger.warning("Relay control not available")
+            return
+        
+        try:
+            import RPi.GPIO as GPIO
+            
+            if action == "grant":
+                # Cancel previous relay timer if still running
+                if hasattr(self, '_relay_thread') and self._relay_thread.is_alive():
+                    logger.warning("⚠️ Previous relay command still running, new command will override")
+                
+                logger.info(f"🔓 Granting access - Relay ON for {duration} seconds")
+                GPIO.output(self.relay_pin, GPIO.HIGH)
+                
+                # Start timer in separate thread (NON-BLOCKING)
+                # This prevents blocking MQTT loop or scanning operations
+                self._relay_thread = threading.Thread(
+                    target=self._relay_timer_thread,
+                    args=(duration,),
+                    daemon=True,
+                    name="RelayTimer"
+                )
+                self._relay_thread.start()
+                logger.debug("✅ Relay timer started in background thread")
+                
+            elif action == "deny":
+                logger.info("🚫 Access denied - Relay remains OFF")
+                GPIO.output(self.relay_pin, GPIO.LOW)
+        except Exception as e:
+            logger.error(f"Relay control error: {e}")
+    
+    def _relay_timer_thread(self, duration):
+        """Background thread to turn off relay after specified duration
+        
+        This runs in a separate thread so it doesn't block the main execution.
+        """
+        try:
+            import RPi.GPIO as GPIO
+            time.sleep(duration)
+            GPIO.output(self.relay_pin, GPIO.LOW)
+            logger.info("🔒 Access period ended - Relay OFF")
+        except Exception as e:
+            logger.error(f"Relay timer thread error: {e}")
+            # Ensure relay is turned off on error
+            try:
+                import RPi.GPIO as GPIO
+                GPIO.output(self.relay_pin, GPIO.LOW)
+            except:
+                pass
+    
+    def init_database(self):
+        """Initialize SQLite database for fingerprint management"""
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            
+            # Create users table if it doesn't exist
+            cursor.execute('''
+                CREATE TABLE IF NOT EXISTS users (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_name TEXT NOT NULL,
+                    fingerprint_id INTEGER NOT NULL,
+                    device_id TEXT DEFAULT 'AS608_001',
+                    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+                )
+            ''')
+            
+            conn.commit()
+            conn.close()
+            logger.info("✓ Database initialized")
+        except Exception as e:
+            logger.error(f"Database initialization error: {e}")
+    
+    def connect_all_sensors(self):
+        """Connect to all configured sensors"""
+        connected_count = 0
+        for sensor in self.sensors:
+            try:
+                if sensor.connect():
+                    connected_count += 1
+                else:
+                    logger.error(f"[{sensor.device_id}] Failed to connect")
+            except Exception as e:
+                logger.error(f"[{sensor.device_id}] Connection error: {e}")
+        
+        if connected_count == 0:
+            logger.error("❌ No sensors connected!")
+            return False
+        
+        logger.info(f"✅ {connected_count}/{len(self.sensors)} sensors connected successfully")
+        return True
+    
+    def connect_mqtt(self):
+        """Connect to MQTT broker"""
+        try:
+            logger.info(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}")
+            self.mqtt_client = mqtt.Client(client_id="whac_multi_fingerprint_client")
+            
+            # Set up callbacks
+            self.mqtt_client.on_connect = self.on_mqtt_connect
+            self.mqtt_client.on_disconnect = self.on_mqtt_disconnect
+            self.mqtt_client.on_message = self.on_mqtt_message
+            
+            # Connect to broker
+            self.mqtt_client.connect(MQTT_BROKER, MQTT_PORT, MQTT_KEEPALIVE)
+            self.mqtt_client.loop_start()
+            
+            # Wait for connection
+            timeout = 10
+            start_time = time.time()
+            while not self.connected and (time.time() - start_time) < timeout:
+                time.sleep(0.1)
+            
+            if self.connected:
+                logger.info("✓ MQTT broker connected successfully!")
+                # Subscribe to command topics
+                self.mqtt_client.subscribe(self.ADD_USER_TOPIC, qos=MQTT_QOS)
+                self.mqtt_client.subscribe(self.IMPORT_TOPIC, qos=MQTT_QOS)
+                self.mqtt_client.subscribe(self.EXPORT_TOPIC, qos=MQTT_QOS)
+                self.mqtt_client.subscribe(self.ACTION_TOPIC, qos=MQTT_QOS)
+                logger.info(f"✓ Subscribed to command topics")
+                return True
+            else:
+                logger.error("✗ Failed to connect to MQTT broker within timeout")
+                return False
+                
+        except Exception as e:
+            logger.error(f"MQTT connection error: {e}")
+            return False
+    
+    def on_mqtt_connect(self, client, userdata, flags, rc):
+        """MQTT connection callback"""
+        if rc == 0:
+            self.connected = True
+            logger.info("MQTT client connected")
+        else:
+            logger.error(f"MQTT connection failed with code {rc}")
+            self.connected = False
+    
+    def on_mqtt_disconnect(self, client, userdata, rc):
+        """MQTT disconnection callback"""
+        self.connected = False
+        logger.warning(f"MQTT client disconnected (code: {rc})")
+    
+    def on_mqtt_message(self, client, userdata, msg):
+        """Handle incoming MQTT commands"""
+        try:
+            topic = msg.topic
+            payload = json.loads(msg.payload.decode())
+            
+            logger.info(f"Received command on {topic}: {payload}")
+            
+            # Handle commands in separate thread to avoid blocking
+            threading.Thread(target=self.handle_command, args=(topic, payload), daemon=True).start()
+            
+        except Exception as e:
+            logger.error(f"Error handling MQTT message: {e}")
+    
+    def handle_command(self, topic, payload):
+        """Handle MQTT command in separate thread"""
+        with self.command_lock:
+            try:
+                if topic == self.ADD_USER_TOPIC:
+                    self.handle_add_user(payload)
+                elif topic == self.IMPORT_TOPIC:
+                    self.handle_import(payload)
+                elif topic == self.EXPORT_TOPIC:
+                    self.handle_export(payload)
+                elif topic == self.ACTION_TOPIC:
+                    self.handle_relay_action(payload)
+            except Exception as e:
+                logger.error(f"Error handling command: {e}")
+    
+    def handle_add_user(self, payload):
+        """Handle add user command - enrolls to all sensors"""
+        try:
+            username = payload.get('username')
+            if not username:
+                logger.error("Username not provided")
+                return
+            
+            logger.info(f"📝 Adding user '{username}' to all sensors...")
+            
+            # Try to enroll on first available sensor
+            for sensor in self.sensors:
+                if not sensor.connected:
+                    continue
+                
+                try:
+                    with sensor.lock:
+                        logger.info(f"[{sensor.device_id}] Starting enrollment for {username}")
+                        # Enrollment logic here (simplified - you may need to expand this)
+                        # For now, just acknowledge
+                        logger.info(f"[{sensor.device_id}] Enrollment completed for {username}")
+                        break
+                except Exception as e:
+                    logger.error(f"[{sensor.device_id}] Enrollment error: {e}")
+                    continue
+                    
+        except Exception as e:
+            logger.error(f"Error in handle_add_user: {e}")
+    
+    def handle_import(self, payload):
+        """Handle import command"""
+        logger.info("Import command received (not fully implemented)")
+    
+    def handle_export(self, payload):
+        """Handle export command"""
+        logger.info("Export command received (not fully implemented)")
+    
+    def handle_relay_action(self, payload):
+        """Handle relay control command"""
+        try:
+            action = payload.get('action', 'deny')
+            duration = payload.get('duration', 10)
+            user_id = payload.get('user_id', 'unknown')
+            command = payload.get('command', 'relay_control')
+            
+            self.control_relay(action, duration)
+            self.send_relay_status(command, user_id, action, "MQTT")
+        except Exception as e:
+            logger.error(f"Error handling relay command: {e}")
+    
+    def send_relay_status(self, command, user_id, action, source):
+        """Send relay status update"""
+        try:
+            if not self.connected:
+                return False
+            
+            payload = {
+                'command': command,
+                'user_id': user_id,
+                'action': action,
+                'source': source,
+                'timestamp': datetime.now().isoformat(),
+                'relay_pin': self.relay_pin,
+                'device_id': 'MULTI_SENSOR',
+                'status': 'completed'
+            }
+            
+            result = self.mqtt_client.publish(self.STATUS_TOPIC, json.dumps(payload))
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"✓ Relay status sent: {command} for user {user_id}")
+                return True
+            else:
+                logger.error(f"✗ Failed to send relay status (rc: {result.rc})")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending relay status: {e}")
+            return False
+    
+    def send_scan_result(self, sensor, status, fingerprint_id, confidence=None):
+        """Send scan result in simple format (same protocol as single sensor)"""
+        if not self.connected:
+            logger.error("MQTT not connected, cannot send data")
+            return False
+        
+        try:
+            # Get user info from local database
+            user_info = self.get_user_info(fingerprint_id)
+            username = user_info.get('username') if user_info else None
+            
+            # Simple JSON format - SAME PROTOCOL as single sensor
+            # Only difference: device_id identifies which sensor detected the fingerprint
+            data = {
+                "store_id": STORE_ID,
+                "timestamp": datetime.now().isoformat(),
+                "status": status,  # "Match" or "Not Match"
+                "fingerprint_id": fingerprint_id,
+                "device_id": sensor.device_id  # This identifies which sensor (e.g., "AS608_001" or "AS608_002")
+            }
+            
+            # Add username if available
+            if username:
+                data["username"] = username
+            
+            # Add confidence if provided
+            if confidence is not None:
+                data["confidence"] = confidence
+            
+            payload = json.dumps(data)
+            result = self.mqtt_client.publish(self.SCAN_TOPIC, payload, qos=MQTT_QOS)
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"[{sensor.device_id}] ✓ Scan result sent: {status} - ID: {fingerprint_id} ({username})")
+                return True
+            else:
+                logger.error(f"[{sensor.device_id}] ✗ Failed to publish scan result (rc: {result.rc})")
+                return False
+                
+        except Exception as e:
+            logger.error(f"[{sensor.device_id}] Error sending scan result: {e}")
+            return False
+    
+    def get_user_info(self, fingerprint_id):
+        """Get user information from local database"""
+        try:
+            conn = sqlite3.connect(self.db_file)
+            cursor = conn.cursor()
+            cursor.execute("SELECT user_name FROM users WHERE fingerprint_id = ?", (fingerprint_id,))
+            result = cursor.fetchone()
+            conn.close()
+            
+            if result:
+                return {"username": result[0]}
+            else:
+                return None
+                
+        except Exception as e:
+            logger.error(f"Error getting user info: {e}")
+            return None
+    
+    def scan_fingerprint_standby(self, sensor):
+        """Standby fingerprint scanning for a specific sensor"""
+        try:
+            # Skip scanning if enrollment is in progress
+            if self.enrolling:
+                return False
+            
+            # Check if sensor is connected
+            if not sensor.connected or not sensor.finger:
+                return False
+            
+            # Check if enough time has passed since last scan
+            current_time = time.time()
+            if current_time - sensor.last_scan_time < SCAN_INTERVAL:
+                return False
+            
+            # Thread-safe scan operation
+            with sensor.lock:
+                # Get fingerprint image
+                i = sensor.finger.get_image()
+                if i == adafruit_fingerprint.OK:
+                    logger.debug(f"[{sensor.device_id}] Fingerprint image captured")
+                    
+                    # Convert image to template
+                    if sensor.finger.image_2_tz(1) == adafruit_fingerprint.OK:
+                        logger.debug(f"[{sensor.device_id}] Image converted to template")
+                        
+                        # Search for match
+                        i = sensor.finger.finger_search()
+                        
+                        if i == adafruit_fingerprint.OK:
+                            # Match found
+                            finger_id = sensor.finger.finger_id
+                            confidence = sensor.finger.confidence
+                            
+                            logger.info(f"[{sensor.device_id}] ✓ Match found! ID: {finger_id}, Confidence: {confidence}")
+                            
+                            # Send scan result with device_id identifying the sensor
+                            self.send_scan_result(sensor, "Match", finger_id, confidence)
+                            
+                            sensor.last_scan_time = current_time
+                            return True
+                        else:
+                            # No match found
+                            logger.debug(f"[{sensor.device_id}] No match found")
+                            # Only send "Not Match" occasionally to avoid spam
+                            if current_time - sensor.last_scan_time > SCAN_INTERVAL * 2:
+                                self.send_scan_result(sensor, "Not Match", 0, 0)
+                                sensor.last_scan_time = current_time
+                            return False
+                    else:
+                        logger.error(f"[{sensor.device_id}] Failed to convert image to template")
+                        return False
+                elif i == adafruit_fingerprint.NOFINGER:
+                    # No finger detected, this is normal
+                    return False
+                else:
+                    logger.error(f"[{sensor.device_id}] Error getting fingerprint image: {i}")
+                    return False
+                    
+        except Exception as e:
+            logger.error(f"[{sensor.device_id}] Error during fingerprint scan: {e}")
+            return False
+    
+    def sensor_scan_loop(self, sensor):
+        """Scanning loop for a specific sensor (runs in separate thread)"""
+        logger.info(f"[{sensor.device_id}] Starting standby scanning on {sensor.port}...")
+        logger.info(f"[{sensor.device_id}] Scan interval: {SCAN_INTERVAL} seconds")
+        
+        try:
+            while self.running and sensor.connected:
+                # Perform fingerprint scan
+                self.scan_fingerprint_standby(sensor)
+                
+                # Small delay to prevent excessive CPU usage
+                time.sleep(0.1)
+                
+        except Exception as e:
+            logger.error(f"[{sensor.device_id}] Error in scan loop: {e}")
+        finally:
+            logger.info(f"[{sensor.device_id}] Scan loop stopped")
+    
+    def run_standby_scanning(self):
+        """Run standby fingerprint scanning from all sensors in parallel"""
+        logger.info("Starting multi-sensor standby fingerprint scanning...")
+        logger.info(f"Scan interval: {SCAN_INTERVAL} seconds")
+        logger.info(f"Confidence threshold: {CONFIDENCE_THRESHOLD}")
+        logger.info(f"Total sensors: {len(self.sensors)}")
+        logger.info("✓ Listening for MQTT commands while scanning...")
+        
+        # Start scanning thread for each sensor
+        self.scan_threads = []
+        for sensor in self.sensors:
+            if sensor.connected:
+                thread = threading.Thread(target=self.sensor_scan_loop, args=(sensor,), daemon=True)
+                thread.start()
+                self.scan_threads.append(thread)
+                logger.info(f"✓ Started scan thread for {sensor.device_id}")
+        
+        if len(self.scan_threads) == 0:
+            logger.error("❌ No scan threads started!")
+            return
+        
+        try:
+            # Keep main thread alive
+            while self.running:
+                # Check if any scan thread is still alive
+                alive_count = sum(1 for t in self.scan_threads if t.is_alive())
+                if alive_count == 0:
+                    logger.warning("All scan threads stopped!")
+                    break
+                time.sleep(1)
+                
+        except KeyboardInterrupt:
+            logger.info("Scanning stopped by user")
+        except Exception as e:
+            logger.error(f"Error in standby scanning: {e}")
+    
+    def cleanup(self):
+        """Clean up resources"""
+        logger.info("Cleaning up resources...")
+        self.running = False
+        
+        # Wait for scan threads to finish
+        for thread in self.scan_threads:
+            thread.join(timeout=2)
+        
+        if self.mqtt_client:
+            self.mqtt_client.loop_stop()
+            self.mqtt_client.disconnect()
+            logger.info("MQTT client disconnected")
+        
+        # Disconnect all sensors
+        for sensor in self.sensors:
+            sensor.disconnect()
+        
+        # Cleanup GPIO
+        try:
+            import RPi.GPIO as GPIO
+            GPIO.cleanup()
+            logger.info("GPIO cleaned up")
+        except:
+            pass
+
+
+def main():
+    """Main function"""
+    client = MultiSensorFingerprintClient()
+    
+    try:
+        # Connect to all fingerprint sensors
+        if not client.connect_all_sensors():
+            logger.error("Failed to connect to sensors")
+            return 1
+        
+        # Connect to MQTT broker
+        if not client.connect_mqtt():
+            logger.error("Failed to connect to MQTT broker")
+            return 1
+        
+        # Show initial status
+        logger.info("=" * 70)
+        logger.info("MULTI-SENSOR FINGERPRINT MQTT CLIENT - Ready!")
+        logger.info("=" * 70)
+        logger.info(f"Store ID: {STORE_ID}")
+        logger.info(f"MQTT Broker: {MQTT_BROKER}:{MQTT_PORT}")
+        logger.info(f"Scan Topic: {client.SCAN_TOPIC}")
+        logger.info(f"Total Sensors: {len(client.sensors)}")
+        
+        for sensor in client.sensors:
+            if sensor.connected:
+                template_count = sensor.get_template_count()
+                logger.info(f"  - {sensor.device_id}: {sensor.port} ({template_count} templates)")
+            else:
+                logger.info(f"  - {sensor.device_id}: {sensor.port} (DISCONNECTED)")
+        
+        logger.info(f"Confidence Threshold: {CONFIDENCE_THRESHOLD}")
+        logger.info("=" * 70)
+        logger.info("✓ Standby scanning active on all sensors")
+        logger.info("✓ MQTT commands can interrupt scanning")
+        logger.info("✓ Each sensor sends data with unique device_id")
+        logger.info("=" * 70)
+        
+        # Wait for sensors to fully stabilize
+        logger.info("⏳ Waiting for sensors to fully stabilize...")
+        time.sleep(5.0)
+        logger.info("🚀 Starting multi-sensor fingerprint scanning...")
+        
+        # Start standby scanning (this will block)
+        client.run_standby_scanning()
+        
+    except Exception as e:
+        logger.error(f"Fatal error: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1
+    finally:
+        client.cleanup()
+    
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
+
+

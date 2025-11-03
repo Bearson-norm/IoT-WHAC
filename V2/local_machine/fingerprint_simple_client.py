@@ -83,7 +83,11 @@ class SimpleFingerprintClient:
             self.relay_pin = None
     
     def control_relay(self, action, duration=10):
-        """Control relay for specified duration"""
+        """Control relay for specified duration (NON-BLOCKING)
+        
+        FIXED: Previously used time.sleep() which blocked the thread.
+        Now uses background thread to handle relay timer without blocking.
+        """
         if not self.relay_pin:
             logger.warning("Relay control not available")
             return
@@ -92,17 +96,49 @@ class SimpleFingerprintClient:
             import RPi.GPIO as GPIO
             
             if action == "grant":
+                # Cancel previous relay timer if still running
+                if hasattr(self, '_relay_thread') and self._relay_thread.is_alive():
+                    logger.warning("⚠️ Previous relay command still running, new command will override")
+                
                 logger.info(f"🔓 Granting access - Relay ON for {duration} seconds")
                 GPIO.output(self.relay_pin, GPIO.HIGH)
-                time.sleep(duration)
-                GPIO.output(self.relay_pin, GPIO.LOW)
-                logger.info("🔒 Access period ended - Relay OFF")
+                
+                # Start timer in separate thread (NON-BLOCKING)
+                # This prevents blocking MQTT loop or scanning operations
+                self._relay_thread = threading.Thread(
+                    target=self._relay_timer_thread,
+                    args=(duration,),
+                    daemon=True,
+                    name="RelayTimer"
+                )
+                self._relay_thread.start()
+                logger.debug("✅ Relay timer started in background thread")
+                
             elif action == "deny":
                 logger.info("🚫 Access denied - Relay remains OFF")
                 GPIO.output(self.relay_pin, GPIO.LOW)
                 
         except Exception as e:
             logger.error(f"Relay control error: {e}")
+    
+    def _relay_timer_thread(self, duration):
+        """Background thread to turn off relay after specified duration
+        
+        This runs in a separate thread so it doesn't block the main execution.
+        """
+        try:
+            import RPi.GPIO as GPIO
+            time.sleep(duration)
+            GPIO.output(self.relay_pin, GPIO.LOW)
+            logger.info("🔒 Access period ended - Relay OFF")
+        except Exception as e:
+            logger.error(f"Relay timer thread error: {e}")
+            # Ensure relay is turned off on error
+            try:
+                import RPi.GPIO as GPIO
+                GPIO.output(self.relay_pin, GPIO.LOW)
+            except:
+                pass
     
     def auto_detect_fingerprint_port(self):
         """Auto-detect AS608 fingerprint sensor port"""
@@ -330,14 +366,38 @@ class SimpleFingerprintClient:
         logger.warning(f"MQTT client disconnected (code: {rc})")
     
     def on_mqtt_message(self, client, userdata, msg):
-        """Handle incoming MQTT commands"""
+        """Handle incoming MQTT commands (NON-BLOCKING)
+        
+        FIXED: Previously processed commands directly in MQTT callback,
+        which blocked the MQTT network loop. Now uses background thread
+        to process commands asynchronously.
+        """
         try:
             topic = msg.topic
             payload = json.loads(msg.payload.decode())
             
             logger.info(f"Received command on {topic}: {payload}")
             
-            # Handle different command topics
+            # Handle commands in separate thread to avoid blocking MQTT loop
+            # CRITICAL: MQTT callback must return quickly to avoid losing messages
+            command_thread = threading.Thread(
+                target=self.handle_command_wrapper,
+                args=(topic, payload),
+                daemon=True,
+                name=f"MQTTCommand_{topic.split('/')[-1]}"
+            )
+            command_thread.start()
+            logger.debug(f"✅ Command processing started in background thread")
+                
+        except Exception as e:
+            logger.error(f"Error handling MQTT message: {e}")
+    
+    def handle_command_wrapper(self, topic, payload):
+        """Wrapper to handle MQTT commands with proper error handling
+        
+        This runs in a separate thread so MQTT callback can return immediately.
+        """
+        try:
             if topic == self.ADD_USER_TOPIC:
                 self.handle_add_user_command(payload)
             elif topic == self.IMPORT_TOPIC:
@@ -346,9 +406,10 @@ class SimpleFingerprintClient:
                 self.handle_export_command(payload)
             elif topic == self.ACTION_TOPIC:
                 self.handle_relay_command(payload)
-                
+            else:
+                logger.warning(f"Unknown command topic: {topic}")
         except Exception as e:
-            logger.error(f"Error handling MQTT message: {e}")
+            logger.error(f"Error in command handler: {e}", exc_info=True)
     
     def init_database(self):
         """Initialize simple SQLite database"""
@@ -723,7 +784,14 @@ class SimpleFingerprintClient:
             logger.error(f"Error sending command response: {e}")
     
     def enroll_fingerprint(self, location):
-        """Enroll a new fingerprint at the specified location"""
+        """Enroll a new fingerprint at the specified location (NON-BLOCKING with timeout)
+        
+        FIXED: Previously had infinite loops without timeout, causing system to hang.
+        Now includes timeout protection and progress feedback.
+        """
+        ENROLLMENT_TIMEOUT = 30  # seconds timeout for each step
+        PROGRESS_INTERVAL = 5    # seconds between progress logs
+        
         try:
             logger.info(f"Starting fingerprint enrollment at location {location}")
             logger.info(f"Using sensor on port: {self.detected_port}")
@@ -733,70 +801,124 @@ class SimpleFingerprintClient:
                 logger.error("❌ Fingerprint sensor not connected!")
                 return False
             
-            # First scan
+            # First scan with timeout
             logger.info("Place finger on sensor for first scan...")
+            start_time = time.time()
+            last_progress_time = start_time
+            
             while True:
+                # Check timeout
+                if time.time() - start_time > ENROLLMENT_TIMEOUT:
+                    logger.error(f"❌ Enrollment timeout: No finger detected within {ENROLLMENT_TIMEOUT} seconds")
+                    logger.error("💡 Please place finger on sensor and try again")
+                    return False
+                
+                # Progress feedback every PROGRESS_INTERVAL seconds
+                current_time = time.time()
+                if current_time - last_progress_time >= PROGRESS_INTERVAL:
+                    elapsed = int(current_time - start_time)
+                    logger.info(f"⏳ Waiting for finger... ({elapsed}/{ENROLLMENT_TIMEOUT}s)")
+                    last_progress_time = current_time
+                
                 i = self.finger.get_image()
                 if i == adafruit_fingerprint.OK:
                     break
-                if i == adafruit_fingerprint.NOFINGER:
+                elif i == adafruit_fingerprint.NOFINGER:
+                    time.sleep(0.1)  # Small delay to reduce CPU usage
                     continue
                 else:
                     logger.error(f"Error getting first image: {i}")
                     logger.error("💡 Check sensor connection and try again")
                     return False
             
-            logger.info("First image captured!")
+            logger.info("✓ First image captured!")
             
             if self.finger.image_2_tz(1) != adafruit_fingerprint.OK:
-                logger.error("Error converting first image")
+                logger.error("Error converting first image to template")
                 return False
             
+            logger.info("✓ First image converted to template")
             logger.info("Remove finger...")
             time.sleep(2)
             
+            # Wait for finger removal with timeout
+            logger.info("Waiting for finger removal...")
+            start_time = time.time()
             while self.finger.get_image() != adafruit_fingerprint.NOFINGER:
-                pass
+                if time.time() - start_time > 10:  # 10 second timeout for removal
+                    logger.warning("⚠️ Finger still detected after 10 seconds, continuing anyway...")
+                    break
+                time.sleep(0.1)
             
-            # Second scan
+            logger.info("✓ Finger removed")
+            
+            # Second scan with timeout
             logger.info("Place same finger again for second scan...")
+            start_time = time.time()
+            last_progress_time = start_time
+            
             while True:
+                # Check timeout
+                if time.time() - start_time > ENROLLMENT_TIMEOUT:
+                    logger.error(f"❌ Enrollment timeout: No finger detected for second scan within {ENROLLMENT_TIMEOUT} seconds")
+                    return False
+                
+                # Progress feedback
+                current_time = time.time()
+                if current_time - last_progress_time >= PROGRESS_INTERVAL:
+                    elapsed = int(current_time - start_time)
+                    logger.info(f"⏳ Waiting for second scan... ({elapsed}/{ENROLLMENT_TIMEOUT}s)")
+                    last_progress_time = current_time
+                
                 i = self.finger.get_image()
                 if i == adafruit_fingerprint.OK:
                     break
-                if i == adafruit_fingerprint.NOFINGER:
+                elif i == adafruit_fingerprint.NOFINGER:
+                    time.sleep(0.1)
                     continue
                 else:
                     logger.error(f"Error getting second image: {i}")
                     return False
             
-            logger.info("Second image captured!")
+            logger.info("✓ Second image captured!")
             
             if self.finger.image_2_tz(2) != adafruit_fingerprint.OK:
-                logger.error("Error converting second image")
+                logger.error("Error converting second image to template")
                 return False
+            
+            logger.info("✓ Second image converted to template")
             
             # Create model
             logger.info("Creating fingerprint model...")
             if self.finger.create_model() != adafruit_fingerprint.OK:
-                logger.error("Error creating model - fingers didn't match?")
+                logger.error("Error creating model - fingers may not match or sensor error")
+                logger.error("💡 Please try again with better finger placement")
                 return False
+            
+            logger.info("✓ Fingerprint model created successfully")
             
             # Store model
             logger.info(f"Storing model at location {location}...")
             if self.finger.store_model(location) != adafruit_fingerprint.OK:
-                logger.error("Error storing model")
+                logger.error("Error storing model - location may be full or invalid")
                 return False
             
-            logger.info(f"✓ Fingerprint enrolled successfully at location {location}!")
+            logger.info(f"✅ Fingerprint enrolled successfully at location {location}!")
             return True
             
         except Exception as e:
             logger.error(f"Error during enrollment: {e}")
+            import traceback
+            logger.error(f"Traceback: {traceback.format_exc()}")
             return False
     
     def scan_fingerprint_standby(self):
-        """Standby fingerprint scanning"""
+        """Standby fingerprint scanning (THREAD-SAFE)
+        
+        FIXED: Previously had no lock protection, causing race conditions
+        when command handlers (enrollment/import) accessed sensor simultaneously.
+        Now uses command_lock to ensure only one operation accesses sensor at a time.
+        """
         try:
             # Skip scanning if enrollment is in progress
             if self.enrolling:
@@ -807,45 +929,59 @@ class SimpleFingerprintClient:
             if current_time - self.last_scan_time < SCAN_INTERVAL:
                 return False
             
-            # Get fingerprint image
-            i = self.finger.get_image()
-            if i == adafruit_fingerprint.OK:
-                logger.debug("Fingerprint image captured")
-                
-                # Convert image to template
-                if self.finger.image_2_tz(1) == adafruit_fingerprint.OK:
-                    logger.debug("Image converted to template")
+            # CRITICAL: Lock sensor access to prevent race condition
+            # Serial port (UART) can only handle one operation at a time
+            # This ensures scanning and command operations don't conflict
+            with self.command_lock:
+                # Get fingerprint image
+                i = self.finger.get_image()
+                if i == adafruit_fingerprint.OK:
+                    logger.debug("Fingerprint image captured")
                     
-                    # Search for match
-                    i = self.finger.finger_search()
-                    
-                    if i == adafruit_fingerprint.OK:
-                        # Match found
-                        finger_id = self.finger.finger_id
-                        confidence = self.finger.confidence
+                    # Convert image to template
+                    if self.finger.image_2_tz(1) == adafruit_fingerprint.OK:
+                        logger.debug("Image converted to template")
                         
-                        logger.info(f"✓ Match found! ID: {finger_id}, Confidence: {confidence}")
+                        # Search for match
+                        i = self.finger.finger_search()
                         
-                        # Always send scan result with status "Match" and confidence
-                        self.send_scan_result("Match", finger_id, confidence)
-                        
-                        self.last_scan_time = current_time
-                        return True
+                        if i == adafruit_fingerprint.OK:
+                            # Match found - store values before releasing lock
+                            finger_id = self.finger.finger_id
+                            confidence = self.finger.confidence
+                            scan_result = {
+                                "status": "Match",
+                                "fingerprint_id": finger_id,
+                                "confidence": confidence
+                            }
+                        else:
+                            # No match found
+                            logger.debug("No match found")
+                            scan_result = {
+                                "status": "Not Match",
+                                "fingerprint_id": 0,
+                                "confidence": 0
+                            }
                     else:
-                        # No match found
-                        logger.info("✗ No match found")
-                        self.send_scan_result("Not Match", 0, 0)
-                        self.last_scan_time = current_time
-                        return True
-                else:
-                    logger.error("Failed to convert image to template")
+                        logger.error("Failed to convert image to template")
+                        return False
+                elif i == adafruit_fingerprint.NOFINGER:
+                    # No finger detected, this is normal
                     return False
-            elif i == adafruit_fingerprint.NOFINGER:
-                # No finger detected, this is normal
-                return False
-            else:
-                logger.error(f"Error getting fingerprint image: {i}")
-                return False
+                else:
+                    logger.error(f"Error getting fingerprint image: {i}")
+                    return False
+            
+            # Send result OUTSIDE lock to prevent blocking other sensor operations
+            # Network operations (MQTT publish) should not hold sensor lock
+            if 'scan_result' in locals():
+                self.send_scan_result(
+                    scan_result["status"],
+                    scan_result["fingerprint_id"],
+                    scan_result.get("confidence")
+                )
+                self.last_scan_time = current_time
+                return True
                 
         except Exception as e:
             logger.error(f"Error during fingerprint scan: {e}")
