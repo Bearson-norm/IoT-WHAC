@@ -44,6 +44,8 @@ CREATE TABLE IF NOT EXISTS log_data (
     store_id VARCHAR(50) NOT NULL,
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     finger_template_id INTEGER,
+    device_id VARCHAR(50),
+    sensor_location VARCHAR(20),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -55,6 +57,8 @@ CREATE TABLE IF NOT EXISTS log_action (
     timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     action VARCHAR(50) NOT NULL,
     granted_denied VARCHAR(20) NOT NULL,
+    device_id VARCHAR(50),
+    sensor_location VARCHAR(20),
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
@@ -71,10 +75,14 @@ CREATE TABLE IF NOT EXISTS store_001 (
 CREATE INDEX IF NOT EXISTS idx_log_data_timestamp ON log_data(timestamp);
 CREATE INDEX IF NOT EXISTS idx_log_data_store_id ON log_data(store_id);
 CREATE INDEX IF NOT EXISTS idx_log_data_user_id ON log_data(user_id);
+CREATE INDEX IF NOT EXISTS idx_log_data_device_id ON log_data(device_id);
+CREATE INDEX IF NOT EXISTS idx_log_data_sensor_location ON log_data(sensor_location);
 
 CREATE INDEX IF NOT EXISTS idx_log_action_timestamp ON log_action(timestamp);
 CREATE INDEX IF NOT EXISTS idx_log_action_store_id ON log_action(store_id);
 CREATE INDEX IF NOT EXISTS idx_log_action_user_id ON log_action(user_id);
+CREATE INDEX IF NOT EXISTS idx_log_action_device_id ON log_action(device_id);
+CREATE INDEX IF NOT EXISTS idx_log_action_sensor_location ON log_action(sensor_location);
 
 CREATE INDEX IF NOT EXISTS idx_store_001_user_id ON store_001(user_id);
 CREATE INDEX IF NOT EXISTS idx_store_001_finger_template_id ON store_001(finger_template_id);
@@ -87,10 +95,17 @@ INSERT INTO store_001 (user_id, username, finger_template_id) VALUES
 ON CONFLICT (user_id) DO NOTHING;
 
 -- Insert default admin user (password: admin123)
--- Password hash for 'admin123' using bcrypt
-INSERT INTO web_users (username, password_hash, full_name, email, role) VALUES 
-('admin', '$2b$12$LQv3c1yqBWVHxkd0LHAkCOYz6TtxMQJqhN8/LewdBPj4J/8Kz8Kz2', 'System Administrator', 'admin@whac.com', 'admin')
-ON CONFLICT (username) DO NOTHING;
+-- Password hash for 'admin123' using bcrypt (verified working)
+INSERT INTO web_users (username, password_hash, full_name, email, role, is_active, login_attempts, locked_until) VALUES 
+('admin', '$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS', 'System Administrator', 'admin@whac.com', 'admin', TRUE, 0, NULL)
+ON CONFLICT (username) DO UPDATE SET 
+    password_hash = EXCLUDED.password_hash,
+    full_name = EXCLUDED.full_name,
+    email = EXCLUDED.email,
+    role = EXCLUDED.role,
+    is_active = TRUE,
+    login_attempts = 0,
+    locked_until = NULL;
 
 -- Insert sample log data
 INSERT INTO log_data (user_id, store_id, finger_template_id) VALUES 
@@ -114,11 +129,18 @@ SELECT
     ld.store_id,
     ld.timestamp,
     ld.finger_template_id,
+    ld.device_id,
+    ld.sensor_location,
     s.username,
     CASE 
         WHEN ld.user_id IS NULL THEN 'Unknown User'
         ELSE s.username
-    END as display_name
+    END as display_name,
+    CASE
+        WHEN ld.device_id = 'AS608_001' THEN 'Pintu Masuk'
+        WHEN ld.device_id = 'AS608_002' THEN 'Pintu Keluar'
+        ELSE COALESCE(ld.sensor_location, 'Unknown')
+    END as location_display
 FROM log_data ld
 LEFT JOIN store_001 s ON ld.user_id = s.user_id
 ORDER BY ld.timestamp DESC;
@@ -133,11 +155,18 @@ SELECT
     la.timestamp,
     la.action,
     la.granted_denied,
+    la.device_id,
+    la.sensor_location,
     CASE 
         WHEN la.granted_denied = 'granted' THEN 'success'
         WHEN la.granted_denied = 'denied' THEN 'danger'
         ELSE 'warning'
-    END as status_class
+    END as status_class,
+    CASE
+        WHEN la.device_id = 'AS608_001' THEN 'Pintu Masuk'
+        WHEN la.device_id = 'AS608_002' THEN 'Pintu Keluar'
+        ELSE COALESCE(la.sensor_location, 'Unknown')
+    END as location_display
 FROM log_action la
 ORDER BY la.timestamp DESC;
 

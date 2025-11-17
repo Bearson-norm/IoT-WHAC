@@ -4,41 +4,36 @@ This folder contains server-side components for the WHAC Fingerprint System.
 
 ## 🎯 Main Components
 
-### **`mqtt_data_processor.py`** ⭐
-**This is the main server component that bridges local machines and web UI!**
+### **`server_template_manager.py`** ⭐
+**Central template management system for multi-sensor deployments**
 
-- ✅ **Receives fingerprint scan data** from local machines via MQTT
-- ✅ **Processes and logs data** to PostgreSQL database
-- ✅ **Real-time data processing** for web UI
-- ✅ **User information lookup** and validation
-- ✅ **Status updates** via MQTT
+- ✅ **Central template management** - Stores fingerprint templates in central database
+- ✅ **User ID reassignment** - Automatically assigns new IDs when transferring between sensors
+- ✅ **Template transfer coordination** - Manages template transfers between sensors
+- ✅ **Multi-sensor management** - Tracks which users are assigned to which sensors
 
 **Usage:**
 ```bash
-python3 mqtt_data_processor.py
+python3 server_template_manager.py
 ```
-
-### **`server_template_manager.py`**
-- Central template management system
-- User ID reassignment between sensors
-- Template transfer coordination
-- Multi-sensor management
 
 ### **`central_fingerprints.db`**
 - SQLite database for template management
 - User profile storage
 - Template metadata
+- Sensor assignment tracking
 
 ## 🔄 Data Flow
 
 ```
-Local Machine → MQTT → Server → PostgreSQL → Web UI
+Local Machine → MQTT → Web UI (Direct)
+                ↓
+         (Optional) Server Template Manager
+                ↓
+         Central Template Database
 ```
 
-1. **Local Machine** scans fingerprint and sends to MQTT
-2. **Server** receives data via `mqtt_data_processor.py`
-3. **Server** processes and logs to PostgreSQL
-4. **Web UI** displays data and sends real-time notifications
+**Note:** For single or dual sensor setups (e.g., entrance/exit), the Web UI directly subscribes to MQTT topics and processes data. The `server_template_manager.py` is only needed for advanced multi-sensor deployments with template transfer requirements.
 
 ## 📊 MQTT Topics
 
@@ -83,58 +78,54 @@ cd server/
 pip install -r requirements.txt
 ```
 
-### **2. Setup Database:**
-```bash
-# Make sure PostgreSQL is running
-# Run the database setup from web_ui folder
-cd ../web_ui/
-psql -U postgres -d whac_master -f database_setup.sql
-```
-
-### **3. Run Server:**
+### **2. Run Server Template Manager (Optional):**
 ```bash
 cd server/
-python3 mqtt_data_processor.py
+python3 server_template_manager.py
 ```
+
+**Note:** Only needed if you require:
+- Template transfer between multiple sensors
+- Central template management
+- User ID reassignment across sensors
+
+For simple dual-sensor setups (entrance/exit), this is **not required**.
 
 ## 📈 Monitoring
 
 ### **Logs:**
 - **MQTT connection** status
-- **Data processing** events
-- **Database operations** results
+- **Template management** operations
+- **Transfer history** tracking
 - **Error handling** and recovery
 
 ### **Status Indicators:**
 - **Connected** to MQTT broker
-- **Subscribed** to scan topics
+- **Subscribed** to export/import topics
 - **Database** connectivity
-- **Processing** statistics
+- **Template operations** statistics
 
 ## 🔧 Integration
 
 ### **With Local Machine:**
-- Receives scan data from `fingerprint_simple_client.py`
-- Processes JSON format data
-- Logs to PostgreSQL database
+- Receives export requests from sensors
+- Stores templates in central database
+- Sends import commands to sensors with new IDs
 
 ### **With Web UI:**
-- Provides real-time data for dashboard
-- Enables popup notifications
-- Supports admin management
+- Web UI directly subscribes to MQTT scan topics
+- No server component needed for basic operation
+- Server only needed for advanced template management
 
-## 🎯 What This Solves
+## 🎯 Use Cases
 
-### **Missing Communication:**
-- ✅ **Bridges** local machine and web UI
-- ✅ **Processes** MQTT data in real-time
-- ✅ **Logs** all scan data to database
-- ✅ **Enables** real-time notifications
+### **When to Use Server Template Manager:**
+- ✅ **Multi-location deployments** - Transfer users between different locations
+- ✅ **Template backup** - Central storage of all templates
+- ✅ **ID management** - Automatic ID reassignment when moving users
+- ✅ **Audit trail** - Track all template transfers
 
-### **Data Flow:**
-- ✅ **Local Machine** → MQTT → **Server** → PostgreSQL → **Web UI**
-- ✅ **Complete integration** between all components
-- ✅ **Real-time processing** and notifications
-- ✅ **Persistent data storage** and retrieval
-
-This is the **missing link** that connects your local machine fingerprint scanner to the web UI dashboard! 🎉
+### **When NOT Needed:**
+- ❌ **Single sensor** - Web UI handles everything directly
+- ❌ **Dual sensor (entrance/exit)** - Web UI handles everything directly
+- ❌ **Simple deployments** - Direct MQTT to Web UI is sufficient

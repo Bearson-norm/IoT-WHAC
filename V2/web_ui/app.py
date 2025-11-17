@@ -415,6 +415,14 @@ def process_incoming_scan(data):
             logger.warning(f"Incomplete scan data: {data}")
             return
         
+        # Determine sensor location based on device_id
+        # AS608_001 = Pintu Masuk, AS608_002 = Pintu Keluar
+        sensor_location = None
+        if device_id == 'AS608_001':
+            sensor_location = 'masuk'
+        elif device_id == 'AS608_002':
+            sensor_location = 'keluar'
+        
         # Parse timestamp
         try:
             scan_time = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
@@ -434,10 +442,10 @@ def process_incoming_scan(data):
             user_info = get_user_info_from_fingerprint(fingerprint_id)
             username = user_info.get('username') if user_info else None
         
-        # Log to database
-        log_scan_to_database(store_id, fingerprint_id, scan_time, action, username, granted_denied)
+        # Log to database with device_id and sensor_location
+        log_scan_to_database(store_id, fingerprint_id, scan_time, action, username, granted_denied, device_id, sensor_location)
         
-        logger.info(f"✓ Processed incoming scan: {status} for user {fingerprint_id} ({username})")
+        logger.info(f"✓ Processed incoming scan: {status} for user {fingerprint_id} ({username}) at {sensor_location or device_id}")
         
     except Exception as e:
         logger.error(f"Error processing incoming scan: {e}")
@@ -463,7 +471,7 @@ def get_user_info_from_fingerprint(fingerprint_id):
         logger.error(f"Error getting user info from fingerprint: {e}")
         return None
 
-def log_scan_to_database(store_id, fingerprint_id, timestamp, action, username, granted_denied="denied"):
+def log_scan_to_database(store_id, fingerprint_id, timestamp, action, username, granted_denied="denied", device_id=None, sensor_location=None):
     """Log scan data to database"""
     try:
         conn = get_db_connection()
@@ -472,17 +480,17 @@ def log_scan_to_database(store_id, fingerprint_id, timestamp, action, username, 
         
         cursor = conn.cursor()
         
-        # Log to log_data table
+        # Log to log_data table with device_id and sensor_location
         cursor.execute("""
-            INSERT INTO log_data (user_id, store_id, timestamp, finger_template_id)
-            VALUES (%s, %s, %s, %s)
-        """, (fingerprint_id, store_id, timestamp, fingerprint_id))
-        
-        # Log to log_action table
-        cursor.execute("""
-            INSERT INTO log_action (user_id, store_id, username, timestamp, action, granted_denied)
+            INSERT INTO log_data (user_id, store_id, timestamp, finger_template_id, device_id, sensor_location)
             VALUES (%s, %s, %s, %s, %s, %s)
-        """, (fingerprint_id, store_id, username, timestamp, action, granted_denied))
+        """, (fingerprint_id, store_id, timestamp, fingerprint_id, device_id, sensor_location))
+        
+        # Log to log_action table with device_id and sensor_location
+        cursor.execute("""
+            INSERT INTO log_action (user_id, store_id, username, timestamp, action, granted_denied, device_id, sensor_location)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (fingerprint_id, store_id, username, timestamp, action, granted_denied, device_id, sensor_location))
         
         conn.commit()
         conn.close()
@@ -735,7 +743,7 @@ def send_relay_command(command, user_id, action):
         logger.error(f"Full traceback: {traceback.format_exc()}")
         return False
 
-def log_manual_action(user_id, action, granted_denied):
+def log_manual_action(user_id, action, granted_denied, device_id=None, sensor_location=None):
     """Log manual action to database"""
     try:
         conn = get_db_connection()
@@ -752,11 +760,11 @@ def log_manual_action(user_id, action, granted_denied):
             if result:
                 username = result[0]
         
-        # Insert action log
+        # Insert action log with device_id and sensor_location
         cursor.execute("""
-            INSERT INTO log_action (user_id, store_id, username, timestamp, action, granted_denied)
-            VALUES (%s, %s, %s, %s, %s, %s)
-        """, (user_id, 'Store001', username, datetime.now(), action, granted_denied))
+            INSERT INTO log_action (user_id, store_id, username, timestamp, action, granted_denied, device_id, sensor_location)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+        """, (user_id, 'Store001', username, datetime.now(), action, granted_denied, device_id, sensor_location))
         
         conn.commit()
         conn.close()

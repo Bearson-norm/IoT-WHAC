@@ -1,6 +1,27 @@
 version: '3.8'
 
 services:
+  # Database initialization service - runs setup script on every container start
+  db-init:
+    build:
+      context: .
+      dockerfile: Dockerfile.init
+    container_name: whac-db-init
+    restart: "no"
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_NAME=${DB_NAME:-whac_master}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-Admin123}
+      - DB_PORT=${DB_PORT:-5432}
+    volumes:
+      - ./database_setup.sql:/app/database_setup.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - whac-network
+
   web-ui:
     build: .
     container_name: whac-web-ui
@@ -42,7 +63,14 @@ services:
     
     # Dependencies
     depends_on:
-      - postgres
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    
+    # Network
+    networks:
+      - whac-network
     
     # Optimized health check - less frequent and lighter
     healthcheck:
@@ -70,8 +98,14 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - whac-network
 
 # MQTT broker removed - using external VPS broker at 103.87.67.139:1883
+
+networks:
+  whac-network:
+    driver: bridge
 
 volumes:
   postgres_data:

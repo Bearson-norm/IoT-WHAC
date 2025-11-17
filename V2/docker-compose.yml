@@ -30,6 +30,25 @@ services:
       - ./local_machine/config.py:/app/config.py:ro
     network_mode: host
 
+  # Database initialization service - runs setup script on every container start
+  db-init:
+    build:
+      context: ./web_ui
+      dockerfile: Dockerfile.init
+    container_name: whac-db-init
+    restart: "no"
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_NAME=${DB_NAME:-whac_master}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-Admin123}
+      - DB_PORT=${DB_PORT:-5432}
+    volumes:
+      - ./web_ui/database_setup.sql:/app/database_setup.sql:ro
+    depends_on:
+      postgres:
+        condition: service_healthy
+
   # Web UI (VPS) - Deploy on VPS
   web-ui:
     build: ./web_ui
@@ -54,8 +73,11 @@ services:
       - ./web_ui/static:/app/static
       - ./web_ui/templates:/app/templates
     depends_on:
-      - postgres
-      - mqtt-broker
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+      mqtt-broker:
 
   # Server (VPS) - Deploy on VPS
   mqtt-processor:
