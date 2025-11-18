@@ -21,9 +21,14 @@ FINGERPRINT_PORT = os.getenv("FINGERPRINT_PORT", "/dev/serial0")  # Raspberry Pi
 
 # For multiple sensors (comma-separated ports):
 # Example: FINGERPRINT_PORTS="/dev/ttyUSB0,/dev/ttyUSB1" or "/dev/serial0,/dev/serial1"
-FINGERPRINT_PORTS = os.getenv("FINGERPRINT_PORTS", "").split(",") if os.getenv("FINGERPRINT_PORTS") else []
-# Filter out empty strings
-FINGERPRINT_PORTS = [p.strip() for p in FINGERPRINT_PORTS if p.strip()]
+# Default: Use 2 sensors - /dev/serial0 and /dev/ttyAMA3
+# To use single sensor, set FINGERPRINT_PORTS="" in environment variable
+env_ports = os.getenv("FINGERPRINT_PORTS", "/dev/serial0,/dev/ttyAMA3")
+if env_ports.strip() == "":
+    # If explicitly set to empty string, use single sensor mode
+    FINGERPRINT_PORTS = []
+else:
+    FINGERPRINT_PORTS = [p.strip() for p in env_ports.split(",") if p.strip()]
 
 BAUD_RATE = int(os.getenv("BAUD_RATE", "57600"))
 CONFIDENCE_THRESHOLD = int(os.getenv("CONFIDENCE_THRESHOLD", "50"))  # Minimum confidence for fingerprint match
