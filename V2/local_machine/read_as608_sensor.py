@@ -13,10 +13,40 @@ import sys
 SENSOR_PORT = "/dev/ttyAMA3"
 BAUD_RATE = 57600
 
+def check_port_in_use(port):
+    """Cek apakah port sedang digunakan"""
+    try:
+        import subprocess
+        result = subprocess.run(['lsof', port], capture_output=True, text=True, timeout=3)
+        if result.stdout:
+            return True, result.stdout
+        return False, None
+    except:
+        return None, None
+
 def connect_sensor(port, baudrate, retries=3):
     """Menghubungkan ke sensor AS608"""
     uart = None
     finger = None
+    
+    # Cek apakah port sedang digunakan
+    print(f"Memeriksa status port {port}...")
+    port_in_use, port_info = check_port_in_use(port)
+    if port_in_use:
+        print("⚠️  PERINGATAN: Port sedang digunakan oleh proses lain!")
+        print("   Detail:")
+        for line in port_info.split('\n')[:5]:  # Tampilkan beberapa baris pertama
+            if line.strip():
+                print(f"   {line}")
+        print("\n💡 Solusi:")
+        print("   1. Hentikan program lain yang menggunakan port ini:")
+        print("      sudo pkill -f fingerprint_multi_client")
+        print("   2. Atau cek proses dengan: lsof /dev/ttyAMA3")
+        print("   3. Lalu kill proses tersebut: sudo kill <PID>")
+        print()
+        response = input("Lanjutkan tetap mencoba koneksi? (y/n): ")
+        if response.lower() != 'y':
+            return None, None
     
     for attempt in range(retries):
         try:
@@ -38,16 +68,50 @@ def connect_sensor(port, baudrate, retries=3):
                 raise Exception("Gagal membaca template dari sensor")
                 
         except serial.SerialException as e:
-            print(f"✗ Error serial: {e}")
+            error_msg = str(e)
+            print(f"✗ Error serial: {error_msg}")
+            
+            # Deteksi jenis error
+            if "Permission denied" in error_msg:
+                print("   → Masalah permission. Coba:")
+                print("     sudo python3 read_as608_sensor.py")
+                print("     atau tambahkan user ke grup dialout:")
+                print("     sudo usermod -a -G dialout $USER")
+            elif "could not open port" in error_msg.lower() or "device or resource busy" in error_msg.lower():
+                print("   → Port sedang digunakan atau device busy")
+                print("   → Cek dengan: python3 check_port_usage.py")
+                print("   → Atau: lsof /dev/ttyAMA3")
+            elif "No such file or directory" in error_msg:
+                print("   → Port tidak ditemukan")
+                print("   → Cek dengan: ls -l /dev/ttyAMA3")
+            
             if uart:
-                uart.close()
+                try:
+                    uart.close()
+                except:
+                    pass
             if attempt < retries - 1:
                 print("  Menunggu 2 detik sebelum mencoba lagi...")
                 time.sleep(2)
         except Exception as e:
-            print(f"✗ Error: {e}")
+            error_msg = str(e)
+            print(f"✗ Error: {error_msg}")
+            
+            # Deteksi error spesifik
+            if "Failed to read data from sensor" in error_msg:
+                print("   → Sensor tidak merespon")
+                print("   → Kemungkinan:")
+                print("     - Sensor tidak terhubung dengan benar")
+                print("     - Kabel TX/RX terbalik")
+                print("     - Baud rate tidak sesuai")
+                print("     - Sensor tidak menyala")
+                print("     - Port sedang digunakan program lain")
+            
             if uart:
-                uart.close()
+                try:
+                    uart.close()
+                except:
+                    pass
             if attempt < retries - 1:
                 print("  Menunggu 2 detik sebelum mencoba lagi...")
                 time.sleep(2)
