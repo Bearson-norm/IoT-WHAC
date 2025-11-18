@@ -123,3 +123,4 @@ Port umum:
 - `/dev/ttyUSB0` - USB to Serial adapter
 - `/dev/serial0` - Alias untuk UART0
 
+
