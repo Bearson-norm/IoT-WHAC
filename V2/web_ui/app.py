@@ -1143,8 +1143,12 @@ def get_web_users():
         return jsonify({'error': 'Access denied'}), 403
     
     try:
+        # Log database configuration for debugging
+        logger.info(f"Getting web users - DB config: host={DB_CONFIG['host']}, db={DB_CONFIG['database']}")
+        
         conn = get_db_connection()
         if not conn:
+            logger.error("Database connection failed")
             return jsonify({'error': 'Database connection failed'}), 500
         
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
@@ -1156,12 +1160,19 @@ def get_web_users():
         """)
         
         users = cursor.fetchall()
+        user_count = len(users)
+        logger.info(f"Found {user_count} users in database")
+        
+        # Log each user for debugging
+        for u in users:
+            logger.debug(f"User: ID={u['id']}, username={u['username']}, role={u['role']}")
+        
         conn.close()
         
         return jsonify([dict(user) for user in users])
         
     except Exception as e:
-        logger.error(f"Error getting web users: {e}")
+        logger.error(f"Error getting web users: {e}", exc_info=True)
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/web_users', methods=['POST'])
@@ -1200,19 +1211,53 @@ def create_web_user():
         
         # Hash password and create user
         password_hash = hash_password(password)
-        cursor.execute("""
-            INSERT INTO web_users (username, password_hash, full_name, email, role, is_active, created_at)
-            VALUES (%s, %s, %s, %s, %s, %s, %s)
-        """, (username, password_hash, full_name, email, role, True, datetime.now()))
         
-        conn.commit()
-        conn.close()
+        logger.info(f"Creating user: username={username}, role={role}, email={email or 'N/A'}")
         
-        logger.info(f"Admin {user['username']} created new web user: {username}")
-        return jsonify({'message': f'User {username} created successfully'})
+        try:
+            cursor.execute("""
+                INSERT INTO web_users (username, password_hash, full_name, email, role, is_active, created_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s)
+            """, (username, password_hash, full_name, email, role, True, datetime.now()))
+            
+            conn.commit()
+            logger.info(f"Admin {user['username']} created new web user: {username} (ID: {cursor.lastrowid if hasattr(cursor, 'lastrowid') else 'N/A'})")
+            
+            # Verify user was created
+            cursor.execute("SELECT id, username, role FROM web_users WHERE username = %s", (username,))
+            created_user = cursor.fetchone()
+            if created_user:
+                logger.info(f"User verified in database: ID={created_user[0]}, username={created_user[1]}")
+            else:
+                logger.warning(f"User {username} was not found after creation!")
+            
+            conn.close()
+            return jsonify({'message': f'User {username} created successfully'})
+            
+        except psycopg2.IntegrityError as e:
+            conn.rollback()
+            conn.close()
+            error_msg = str(e)
+            if 'unique constraint' in error_msg.lower() or 'duplicate key' in error_msg.lower():
+                logger.warning(f"Username {username} already exists")
+                return jsonify({'error': 'Username already exists'}), 400
+            else:
+                logger.error(f"Integrity error creating user {username}: {e}")
+                return jsonify({'error': f'Database constraint violation: {error_msg}'}), 400
+        except psycopg2.Error as e:
+            conn.rollback()
+            conn.close()
+            logger.error(f"Database error creating user {username}: {e}")
+            return jsonify({'error': f'Database error: {str(e)}'}), 500
         
     except Exception as e:
-        logger.error(f"Error creating web user: {e}")
+        logger.error(f"Error creating web user: {e}", exc_info=True)
+        if 'conn' in locals():
+            try:
+                conn.rollback()
+                conn.close()
+            except:
+                pass
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/admin/web_users/<int:user_id>', methods=['PUT'])

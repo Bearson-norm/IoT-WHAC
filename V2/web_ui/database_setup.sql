@@ -29,7 +29,7 @@ CREATE TABLE IF NOT EXISTS web_users (
 -- User sessions table
 CREATE TABLE IF NOT EXISTS user_sessions (
     id SERIAL PRIMARY KEY,
-    user_id INTEGER REFERENCES web_users(id),
+    user_id INTEGER REFERENCES web_users(id) ON DELETE CASCADE,
     session_token VARCHAR(255) UNIQUE NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     expires_at TIMESTAMP NOT NULL,
@@ -70,6 +70,16 @@ CREATE TABLE IF NOT EXISTS store_001 (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+-- Add missing columns to existing tables (for migration compatibility)
+-- This ensures columns exist even if tables were created before
+ALTER TABLE log_data 
+ADD COLUMN IF NOT EXISTS device_id VARCHAR(50),
+ADD COLUMN IF NOT EXISTS sensor_location VARCHAR(20);
+
+ALTER TABLE log_action 
+ADD COLUMN IF NOT EXISTS device_id VARCHAR(50),
+ADD COLUMN IF NOT EXISTS sensor_location VARCHAR(20);
 
 -- Create indexes for better performance
 CREATE INDEX IF NOT EXISTS idx_log_data_timestamp ON log_data(timestamp);

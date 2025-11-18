@@ -7,20 +7,35 @@ Panduan lengkap untuk menghubungkan DBeaver ke database PostgreSQL Web UI.
 Berdasarkan konfigurasi default:
 
 - **Database Type**: PostgreSQL
-- **Host**: `localhost` (jika menggunakan Docker) atau `127.0.0.1`
+- **Host**: `localhost` (atau `127.0.0.1`)
 - **Port**: `5432`
 - **Database Name**: `whac_master`
 - **Username**: `postgres`
 - **Password**: `Admin123`
 
-> **Catatan**: Jika database berjalan di Docker, port `5432` sudah di-expose ke localhost, jadi Anda bisa langsung menggunakan `localhost`.
+> **Catatan Penting**: 
+> - Jika database berjalan di Docker, port `5432` sudah di-expose ke localhost di `docker-compose.yml`
+> - Ketika Anda connect ke `localhost:5432` menggunakan DBeaver, Anda akan terhubung ke **database Docker**
+> - Ini adalah database yang sama yang digunakan oleh Web UI container
+> - Jika Anda punya PostgreSQL lokal yang juga menggunakan port 5432, pastikan Docker container sudah berjalan dan port tidak conflict
 
 ## 🚀 Langkah-langkah Menghubungkan DBeaver
 
-### 1. Pastikan Database Berjalan
+### 1. Pastikan Database Docker Berjalan
 
 Sebelum menghubungkan, pastikan container PostgreSQL berjalan:
 
+**Windows PowerShell:**
+```powershell
+# Cek status container
+docker ps | Select-String postgres
+
+# Atau jika menggunakan docker-compose
+cd web_ui/
+docker-compose ps
+```
+
+**Linux/Mac:**
 ```bash
 # Cek status container
 docker ps | grep postgres
@@ -36,6 +51,8 @@ Jika belum berjalan, jalankan:
 cd web_ui/
 docker-compose up -d postgres
 ```
+
+> **Penting**: Pastikan container `whac-postgres` sedang berjalan. Jika tidak, DBeaver tidak bisa connect.
 
 ### 2. Buka DBeaver
 
@@ -137,6 +154,68 @@ ORDER BY timestamp DESC;
 SELECT * FROM store_001;
 ```
 
+### Memeriksa Database Docker
+
+Ketika Anda connect ke `localhost:5432`, Anda akan terhubung ke **database Docker**. Untuk memverifikasi:
+
+```sql
+-- Cek jumlah user di database
+SELECT COUNT(*) as total_users FROM web_users;
+
+-- Lihat semua user
+SELECT id, username, full_name, email, role, is_active, created_at, last_login 
+FROM web_users 
+ORDER BY created_at DESC;
+```
+
+**Tips:**
+- Jika hanya melihat 1 user (admin), berarti database Docker belum ter-sync dengan data lengkap
+- Gunakan script `check_docker_db.py` untuk membandingkan dengan database lokal
+- Jika perlu sync data, gunakan script `sync_users_simple.ps1` (Windows) atau `sync_users_simple.sh` (Linux/Mac)
+
+### Melihat Informasi User Admin
+
+Untuk melihat informasi lengkap user admin (termasuk password hash):
+
+```sql
+SELECT 
+    id,
+    username,
+    password_hash,
+    full_name,
+    email,
+    role,
+    is_active,
+    created_at,
+    last_login,
+    login_attempts,
+    locked_until
+FROM web_users 
+WHERE username = 'admin';
+```
+
+Atau untuk melihat semua user:
+
+```sql
+SELECT 
+    id,
+    username,
+    full_name,
+    email,
+    role,
+    is_active,
+    created_at,
+    last_login
+FROM web_users 
+ORDER BY username;
+```
+
+**Catatan Penting tentang Password:**
+- Password disimpan sebagai **hash bcrypt** di kolom `password_hash`
+- Password asli **TIDAK BISA** dibaca dari hash (one-way encryption)
+- Untuk memverifikasi password, gunakan script Python: `python check_admin_info.py admin`
+- Untuk reset password, gunakan: `python reset_user_password.py admin admin123`
+
 ## 🔧 Troubleshooting
 
 ### Error: Connection refused
@@ -231,6 +310,7 @@ Kemudian di DBeaver, gunakan port `5433` sebagai Host port (tapi internal tetap 
 ---
 
 **Selamat! Database Anda sekarang sudah terhubung ke DBeaver.** 🎉
+
 
 
 

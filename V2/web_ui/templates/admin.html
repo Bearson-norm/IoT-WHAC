@@ -445,49 +445,109 @@
         async function loadWebUsers() {
             try {
                 const response = await fetch('/api/admin/web_users');
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
                 const users = await response.json();
+                
+                // Debug logging
+                console.log(`[loadWebUsers] Received ${users.length} users from API`);
+                console.log('[loadWebUsers] Users data:', users);
+                
+                // Check if users is an array
+                if (!Array.isArray(users)) {
+                    console.error('[loadWebUsers] API did not return an array:', users);
+                    throw new Error('API returned invalid data format');
+                }
                 
                 const tbody = document.getElementById('webUsersTable');
                 tbody.innerHTML = '';
 
-                users.forEach(user => {
-                    const row = document.createElement('tr');
-                    const statusBadge = user.is_active ? 
-                        '<span class="badge bg-success">Active</span>' : 
-                        '<span class="badge bg-danger">Inactive</span>';
-                    
-                    const lockedBadge = user.locked_until && new Date(user.locked_until) > new Date() ? 
-                        '<span class="badge bg-warning ms-1">Locked</span>' : '';
-
-                    const lastLogin = user.last_login ? 
-                        new Date(user.last_login).toLocaleDateString() : 'Never';
-
-                    row.innerHTML = `
-                        <td>${user.id}</td>
-                        <td>${user.username}</td>
-                        <td>${user.full_name || 'N/A'}</td>
-                        <td>${user.email || 'N/A'}</td>
-                        <td><span class="badge bg-info">${user.role}</span></td>
-                        <td>${statusBadge}${lockedBadge}</td>
-                        <td>${lastLogin}</td>
-                        <td>
-                            <button class="btn btn-sm btn-outline-primary btn-action" onclick="editWebUser(${user.id})">
-                                <i class="fas fa-edit"></i>
-                            </button>
-                            <button class="btn btn-sm btn-outline-warning btn-action" onclick="resetPasswordModal(${user.id}, '${user.username}')">
-                                <i class="fas fa-key"></i>
-                            </button>
-                            <button class="btn btn-sm btn-outline-danger btn-action" onclick="deleteWebUser(${user.id}, '${user.username}')">
-                                <i class="fas fa-trash"></i>
-                            </button>
-                        </td>
+                if (users.length === 0) {
+                    tbody.innerHTML = `
+                        <tr>
+                            <td colspan="8" class="text-center text-muted">
+                                No web users found. Create your first user using the button above.
+                            </td>
+                        </tr>
                     `;
-                    tbody.appendChild(row);
+                    return;
+                }
+
+                users.forEach((user, index) => {
+                    try {
+                        // Validate required fields
+                        if (!user.id || !user.username) {
+                            console.warn(`[loadWebUsers] User at index ${index} missing required fields:`, user);
+                            return; // Skip invalid user
+                        }
+                        
+                        const row = document.createElement('tr');
+                        const statusBadge = user.is_active ? 
+                            '<span class="badge bg-success">Active</span>' : 
+                            '<span class="badge bg-danger">Inactive</span>';
+                        
+                        const lockedBadge = user.locked_until && new Date(user.locked_until) > new Date() ? 
+                            '<span class="badge bg-warning ms-1">Locked</span>' : '';
+
+                        let lastLogin = 'Never';
+                        if (user.last_login) {
+                            try {
+                                const loginDate = new Date(user.last_login);
+                                if (!isNaN(loginDate.getTime())) {
+                                    lastLogin = loginDate.toLocaleDateString();
+                                }
+                            } catch (e) {
+                                console.warn(`[loadWebUsers] Error parsing last_login for user ${user.username}:`, e);
+                            }
+                        }
+
+                        // Escape username for onclick to prevent XSS
+                        const safeUsername = String(user.username).replace(/'/g, "\\'");
+
+                        row.innerHTML = `
+                            <td>${user.id}</td>
+                            <td>${user.username}</td>
+                            <td>${user.full_name || 'N/A'}</td>
+                            <td>${user.email || 'N/A'}</td>
+                            <td><span class="badge bg-info">${user.role || 'N/A'}</span></td>
+                            <td>${statusBadge}${lockedBadge}</td>
+                            <td>${lastLogin}</td>
+                            <td>
+                                <button class="btn btn-sm btn-outline-primary btn-action" onclick="editWebUser(${user.id})">
+                                    <i class="fas fa-edit"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-warning btn-action" onclick="resetPasswordModal(${user.id}, '${safeUsername}')">
+                                    <i class="fas fa-key"></i>
+                                </button>
+                                <button class="btn btn-sm btn-outline-danger btn-action" onclick="deleteWebUser(${user.id}, '${safeUsername}')">
+                                    <i class="fas fa-trash"></i>
+                                </button>
+                            </td>
+                        `;
+                        tbody.appendChild(row);
+                    } catch (userError) {
+                        console.error(`[loadWebUsers] Error rendering user at index ${index}:`, userError, user);
+                    }
                 });
+                
+                console.log(`[loadWebUsers] Successfully rendered ${tbody.children.length} user rows`);
 
             } catch (error) {
-                console.error('Error loading web users:', error);
-                showAlert('Error loading web users', 'danger');
+                console.error('[loadWebUsers] Error loading web users:', error);
+                const tbody = document.getElementById('webUsersTable');
+                tbody.innerHTML = `
+                    <tr>
+                        <td colspan="8" class="text-center text-danger">
+                            <i class="fas fa-exclamation-triangle me-2"></i>
+                            Error loading web users: ${error.message}
+                            <br><small>Check browser console for details</small>
+                        </td>
+                    </tr>
+                `;
+                showAlert('Error loading web users: ' + error.message, 'danger');
             }
         }
 
@@ -526,13 +586,37 @@
 
         // Create web user
         async function createWebUser() {
+            const username = document.getElementById('webUsername').value.trim();
+            const password = document.getElementById('webPassword').value;
+            const fullName = document.getElementById('webFullName').value.trim();
+            const email = document.getElementById('webEmail').value.trim();
+            const role = document.getElementById('webRole').value;
+
+            // Validation
+            if (!username) {
+                showAlert('Username is required', 'danger');
+                return;
+            }
+
+            if (!password) {
+                showAlert('Password is required', 'danger');
+                return;
+            }
+
+            if (password.length < 6) {
+                showAlert('Password must be at least 6 characters long', 'danger');
+                return;
+            }
+
             const data = {
-                username: document.getElementById('webUsername').value,
-                password: document.getElementById('webPassword').value,
-                full_name: document.getElementById('webFullName').value,
-                email: document.getElementById('webEmail').value,
-                role: document.getElementById('webRole').value
+                username: username,
+                password: password,
+                full_name: fullName || null,
+                email: email || null,
+                role: role
             };
+
+            console.log('[createWebUser] Creating user:', { username, role, hasPassword: !!password });
 
             try {
                 const response = await fetch('/api/admin/web_users', {
@@ -543,17 +627,22 @@
 
                 const result = await response.json();
                 
+                console.log('[createWebUser] Response:', { status: response.status, result });
+
                 if (response.ok) {
-                    showAlert(result.message, 'success');
+                    showAlert(result.message || `User ${username} created successfully`, 'success');
                     bootstrap.Modal.getInstance(document.getElementById('createWebUserModal')).hide();
                     document.getElementById('createWebUserForm').reset();
                     loadWebUsers();
                     loadAdminStats();
                 } else {
-                    showAlert(result.error, 'danger');
+                    const errorMsg = result.error || 'Failed to create user';
+                    console.error('[createWebUser] Error:', errorMsg);
+                    showAlert(errorMsg, 'danger');
                 }
             } catch (error) {
-                showAlert('Error creating web user', 'danger');
+                console.error('[createWebUser] Exception:', error);
+                showAlert('Error creating web user: ' + error.message, 'danger');
             }
         }
 
