@@ -75,3 +75,5 @@ Write-Host "Local PostgreSQL services stopped" -ForegroundColor White
 Write-Host "DBeaver should now connect to Docker database only" -ForegroundColor White
 Write-Host "============================================================" -ForegroundColor Cyan
 
+
+

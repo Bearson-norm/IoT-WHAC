@@ -41,3 +41,5 @@ LEFT JOIN user_sessions s ON u.id = s.user_id
 WHERE u.id IN (2, 3, 4)
 GROUP BY u.id, u.username;
 
+
+

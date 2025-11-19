@@ -132,3 +132,5 @@ if __name__ == '__main__':
     success = test_create_user(username, password, full_name, email, role)
     sys.exit(0 if success else 1)
 
+
+

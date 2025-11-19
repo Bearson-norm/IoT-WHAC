@@ -180,6 +180,65 @@ SELECT
 FROM log_action la
 ORDER BY la.timestamp DESC;
 
+-- Attendance tracking table for clock in/out
+CREATE TABLE IF NOT EXISTS attendance (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    username VARCHAR(100),
+    attendance_date DATE NOT NULL,
+    clock_in TIMESTAMP,
+    clock_out TIMESTAMP,
+    first_granted TIMESTAMP NOT NULL,
+    last_granted TIMESTAMP NOT NULL,
+    total_granted INTEGER DEFAULT 1,
+    device_id_in VARCHAR(50),
+    device_id_out VARCHAR(50),
+    sensor_location_in VARCHAR(20),
+    sensor_location_out VARCHAR(20),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, attendance_date)
+);
+
+-- Create indexes for attendance table
+CREATE INDEX IF NOT EXISTS idx_attendance_user_id ON attendance(user_id);
+CREATE INDEX IF NOT EXISTS idx_attendance_date ON attendance(attendance_date);
+CREATE INDEX IF NOT EXISTS idx_attendance_user_date ON attendance(user_id, attendance_date);
+
+-- Create view for attendance summary
+CREATE OR REPLACE VIEW attendance_summary AS
+SELECT 
+    a.id,
+    a.user_id,
+    a.username,
+    a.attendance_date,
+    a.clock_in,
+    a.clock_out,
+    a.first_granted as first_access,
+    a.last_granted as last_access,
+    a.total_granted,
+    a.device_id_in,
+    a.device_id_out,
+    a.sensor_location_in,
+    a.sensor_location_out,
+    CASE
+        WHEN a.clock_in IS NOT NULL AND a.clock_out IS NOT NULL THEN 
+            EXTRACT(EPOCH FROM (a.clock_out - a.clock_in)) / 3600
+        ELSE NULL
+    END as hours_worked,
+    CASE
+        WHEN a.device_id_in = 'AS608_001' THEN 'Pintu Masuk'
+        WHEN a.device_id_in = 'AS608_002' THEN 'Pintu Keluar'
+        ELSE COALESCE(a.sensor_location_in, 'Unknown')
+    END as location_in_display,
+    CASE
+        WHEN a.device_id_out = 'AS608_001' THEN 'Pintu Masuk'
+        WHEN a.device_id_out = 'AS608_002' THEN 'Pintu Keluar'
+        ELSE COALESCE(a.sensor_location_out, 'Unknown')
+    END as location_out_display
+FROM attendance a
+ORDER BY a.attendance_date DESC, a.user_id;
+
 -- Grant permissions (adjust as needed)
 -- GRANT ALL PRIVILEGES ON ALL TABLES IN SCHEMA public TO postgres;
 -- GRANT ALL PRIVILEGES ON ALL SEQUENCES IN SCHEMA public TO postgres;

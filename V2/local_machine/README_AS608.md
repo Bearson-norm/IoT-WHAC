@@ -124,3 +124,4 @@ Port umum:
 - `/dev/serial0` - Alias untuk UART0
 
 
+

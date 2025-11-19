@@ -155,3 +155,4 @@ FINGERPRINT_PORTS="/dev/serial0,/dev/ttyAMA1,/dev/ttyAMA2,/dev/ttyAMA3" python3 
 
 4. **Data dari setiap sensor akan dikirim dengan device_id yang berbeda** ke MQTT
 
+

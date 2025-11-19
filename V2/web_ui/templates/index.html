@@ -171,6 +171,11 @@
                     <i class="fas fa-users me-2"></i>User Management
                 </button>
             </li>
+            <li class="nav-item" role="presentation">
+                <button class="nav-link" id="attendance-tab" data-bs-toggle="tab" data-bs-target="#attendance" type="button" role="tab">
+                    <i class="fas fa-clock me-2"></i>Attendance
+                </button>
+            </li>
         </ul>
 
         <div class="tab-content" id="mainTabsContent">
@@ -281,6 +286,56 @@
                                 </tbody>
                             </table>
                         </div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Attendance Tab -->
+            <div class="tab-pane fade" id="attendance" role="tabpanel">
+                <div class="card">
+                    <div class="card-header d-flex justify-content-between align-items-center">
+                        <h5><i class="fas fa-clock me-2"></i>Attendance Records</h5>
+                        <div>
+                            <input type="date" id="attendance-start-date" class="form-control form-control-sm d-inline-block" style="width: auto;">
+                            <span class="mx-2">to</span>
+                            <input type="date" id="attendance-end-date" class="form-control form-control-sm d-inline-block" style="width: auto;">
+                            <button class="btn btn-primary btn-sm ms-2" onclick="loadAttendance()">
+                                <i class="fas fa-sync-alt me-1"></i>Refresh
+                            </button>
+                            <button class="btn btn-success btn-sm ms-2" onclick="generateAttendanceReport()">
+                                <i class="fas fa-file-download me-1"></i>Generate Report
+                            </button>
+                        </div>
+                    </div>
+                    <div class="card-body">
+                        <div class="table-responsive">
+                            <table class="table table-striped table-hover">
+                                <thead class="table-dark">
+                                    <tr>
+                                        <th>Date</th>
+                                        <th>User ID</th>
+                                        <th>Username</th>
+                                        <th>Clock In</th>
+                                        <th>Clock Out</th>
+                                        <th>Hours Worked</th>
+                                        <th>Total Access</th>
+                                        <th>Location In</th>
+                                        <th>Location Out</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="attendance-table-body">
+                                    <tr>
+                                        <td colspan="9" class="loading">
+                                            <i class="fas fa-spinner fa-spin me-2"></i>Loading attendance...
+                                        </td>
+                                    </tr>
+                                </tbody>
+                            </table>
+                        </div>
+                        <nav aria-label="Attendance pagination">
+                            <ul class="pagination justify-content-center" id="attendance-pagination">
+                            </ul>
+                        </nav>
                     </div>
                 </div>
             </div>
@@ -433,6 +488,7 @@
             loadActionLogs();
             loadUsers();
             loadCharts();
+            // Attendance will be loaded when tab is clicked
             
             // Auto-refresh every 30 seconds
             setInterval(() => {
@@ -737,7 +793,8 @@
             socket.emit('grant_access', {
                 user_id: currentScanData.user_id,
                 action: currentScanData.status,
-                username: currentScanData.username
+                username: currentScanData.username,
+                device_id: currentScanData.device_id  // Include device_id for relay control
             });
             
             // Close the modal using global instance
@@ -759,7 +816,8 @@
             socket.emit('deny_access', {
                 user_id: currentScanData.user_id,
                 action: currentScanData.status,
-                username: currentScanData.username
+                username: currentScanData.username,
+                device_id: currentScanData.device_id  // Include device_id for relay control
             });
             
             // Close the modal using global instance
@@ -1220,9 +1278,43 @@
 
         // Add user
         async function addUser() {
-            const user_id = document.getElementById('user_id').value;
-            const username = document.getElementById('username').value;
-            const finger_template_id = document.getElementById('finger_template_id').value;
+            const user_id_input = document.getElementById('user_id').value.trim();
+            const username_input = document.getElementById('username').value.trim();
+            const finger_template_id_input = document.getElementById('finger_template_id').value.trim();
+            
+            // Frontend validation
+            const errors = [];
+            
+            if (!user_id_input) {
+                errors.push('User ID is required');
+            } else {
+                const user_id_num = parseInt(user_id_input);
+                if (isNaN(user_id_num) || user_id_num <= 0) {
+                    errors.push('User ID must be a positive integer');
+                }
+            }
+            
+            if (!username_input) {
+                errors.push('Username is required');
+            }
+            
+            if (!finger_template_id_input) {
+                errors.push('Fingerprint Template ID is required');
+            } else {
+                const finger_template_id_num = parseInt(finger_template_id_input);
+                if (isNaN(finger_template_id_num) || finger_template_id_num <= 0) {
+                    errors.push('Fingerprint Template ID must be a positive integer');
+                }
+            }
+            
+            if (errors.length > 0) {
+                alert('Validation errors:\n' + errors.join('\n'));
+                return;
+            }
+            
+            // Convert to integers for API
+            const user_id = parseInt(user_id_input);
+            const finger_template_id = parseInt(finger_template_id_input);
             
             try {
                 const response = await fetch('/api/add_user', {
@@ -1231,9 +1323,9 @@
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
-                        user_id: parseInt(user_id),
-                        username: username,
-                        finger_template_id: parseInt(finger_template_id)
+                        user_id: user_id,
+                        username: username_input,
+                        finger_template_id: finger_template_id
                     })
                 });
                 
@@ -1245,11 +1337,16 @@
                     bootstrap.Modal.getInstance(document.getElementById('addUserModal')).hide();
                     loadUsers();
                 } else {
-                    alert('Error: ' + data.error);
+                    // Show detailed error messages
+                    let errorMessage = data.error || 'Unknown error';
+                    if (data.details && Array.isArray(data.details)) {
+                        errorMessage += '\n\nDetails:\n' + data.details.join('\n');
+                    }
+                    alert('Error: ' + errorMessage);
                 }
             } catch (error) {
                 console.error('Error adding user:', error);
-                alert('Error adding user');
+                alert('Error adding user: ' + error.message);
             }
         }
 
@@ -1284,6 +1381,114 @@
         function refreshActionLogs() {
             loadActionLogs(currentActionsPage);
         }
+
+        // Attendance functions
+        let currentAttendancePage = 1;
+
+        async function loadAttendance(page = 1) {
+            try {
+                const startDate = document.getElementById('attendance-start-date').value;
+                const endDate = document.getElementById('attendance-end-date').value;
+                
+                let url = `/api/attendance?page=${page}&per_page=20`;
+                if (startDate) url += `&start_date=${startDate}`;
+                if (endDate) url += `&end_date=${endDate}`;
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                const tbody = document.getElementById('attendance-table-body');
+                tbody.innerHTML = '';
+                
+                if (data.attendance.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="9" class="text-center">No attendance records found</td></tr>';
+                    return;
+                }
+                
+                data.attendance.forEach(record => {
+                    const row = document.createElement('tr');
+                    const clockIn = record.clock_in ? new Date(record.clock_in).toLocaleString() : '-';
+                    const clockOut = record.clock_out ? new Date(record.clock_out).toLocaleString() : '-';
+                    const hoursWorked = record.hours_worked ? record.hours_worked.toFixed(2) : '-';
+                    
+                    row.innerHTML = `
+                        <td>${new Date(record.attendance_date).toLocaleDateString()}</td>
+                        <td>${record.user_id || 'N/A'}</td>
+                        <td>${record.username || 'Unknown'}</td>
+                        <td>${clockIn}</td>
+                        <td>${clockOut}</td>
+                        <td>${hoursWorked}</td>
+                        <td>${record.total_granted || 0}</td>
+                        <td>${record.location_in_display || '-'}</td>
+                        <td>${record.location_out_display || '-'}</td>
+                    `;
+                    tbody.appendChild(row);
+                });
+                
+                currentAttendancePage = page;
+                updatePagination('attendance-pagination', page, data.total_pages, loadAttendance);
+            } catch (error) {
+                console.error('Error loading attendance:', error);
+                document.getElementById('attendance-table-body').innerHTML = 
+                    '<tr><td colspan="9" class="text-center text-danger">Error loading attendance</td></tr>';
+            }
+        }
+
+        async function generateAttendanceReport() {
+            try {
+                const startDate = document.getElementById('attendance-start-date').value;
+                const endDate = document.getElementById('attendance-end-date').value;
+                
+                let url = '/api/attendance/report?';
+                if (startDate) url += `start_date=${startDate}&`;
+                if (endDate) url += `end_date=${endDate}`;
+                
+                const response = await fetch(url);
+                const data = await response.json();
+                
+                // Create CSV content
+                let csv = 'User ID,Username,Days Present,First Date,Last Date,Clock In Count,Clock Out Count,Avg Hours Worked,Total Access Granted\n';
+                
+                data.report.forEach(record => {
+                    csv += `${record.user_id},${record.username || ''},${record.days_present || 0},${record.first_date || ''},${record.last_date || ''},${record.clock_in_count || 0},${record.clock_out_count || 0},${(record.avg_hours_worked || 0).toFixed(2)},${record.total_access_granted || 0}\n`;
+                });
+                
+                // Download CSV
+                const blob = new Blob([csv], { type: 'text/csv' });
+                const url_blob = window.URL.createObjectURL(blob);
+                const a = document.createElement('a');
+                a.href = url_blob;
+                a.download = `attendance_report_${startDate || 'all'}_${endDate || 'all'}.csv`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                window.URL.revokeObjectURL(url_blob);
+                
+                showNotification('Attendance report downloaded successfully!', 'success');
+            } catch (error) {
+                console.error('Error generating attendance report:', error);
+                showNotification('Error generating attendance report', 'error');
+            }
+        }
+
+        // Initialize attendance tab date inputs
+        document.addEventListener('DOMContentLoaded', function() {
+            // Set default dates (current month)
+            const today = new Date();
+            const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
+            const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
+            
+            document.getElementById('attendance-start-date').value = firstDay.toISOString().split('T')[0];
+            document.getElementById('attendance-end-date').value = lastDay.toISOString().split('T')[0];
+            
+            // Load attendance when tab is clicked
+            const attendanceTab = document.getElementById('attendance-tab');
+            if (attendanceTab) {
+                attendanceTab.addEventListener('shown.bs.tab', function() {
+                    loadAttendance(1);
+                });
+            }
+        });
     </script>
 </body>
 </html>

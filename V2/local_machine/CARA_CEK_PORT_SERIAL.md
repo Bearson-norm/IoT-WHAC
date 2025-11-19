@@ -218,3 +218,4 @@ chmod +x cek_serial.sh
 ./cek_serial.sh
 ```
 
+

@@ -532,22 +532,33 @@ def handle_grant_access(data):
         user_id = data.get('user_id')
         action = data.get('action', 'access_granted')
         username = data.get('username', 'Unknown')
+        device_id = data.get('device_id')  # Get device_id from scan data
         
-        logger.info(f"Granting access for user {user_id} ({username})")
+        logger.info(f"Granting access for user {user_id} ({username}) from device {device_id}")
         
-        # Send MQTT command to control relay
-        success = send_relay_command('grant', user_id, action)
+        # Determine sensor location based on device_id
+        sensor_location = None
+        if device_id == 'AS608_001':
+            sensor_location = 'masuk'
+        elif device_id == 'AS608_002':
+            sensor_location = 'keluar'
+        
+        # Send MQTT command to control relay (include device_id)
+        success = send_relay_command('grant', user_id, action, device_id)
         
         if success:
-            # Log to database
-            log_manual_action(user_id, action, 'granted')
+            # Log to database with device_id
+            log_manual_action(user_id, action, 'granted', device_id, sensor_location)
+            
+            # Update attendance tracking
+            update_attendance(user_id, username, device_id, sensor_location, 'granted')
             
             emit('action_result', {
                 'status': 'success',
                 'message': f'Access granted for {username} (ID: {user_id})',
                 'action': 'granted'
             })
-            logger.info(f"✓ Access granted for user {user_id} ({username})")
+            logger.info(f"✓ Access granted for user {user_id} ({username}) from {device_id}")
         else:
             emit('action_result', {
                 'status': 'error',
@@ -673,22 +684,30 @@ def handle_deny_access(data):
         user_id = data.get('user_id')
         action = data.get('action', 'access_denied')
         username = data.get('username', 'Unknown')
+        device_id = data.get('device_id')  # Get device_id from scan data
         
-        logger.info(f"Denying access for user {user_id} ({username})")
+        logger.info(f"Denying access for user {user_id} ({username}) from device {device_id}")
         
-        # Send MQTT command to control relay
-        success = send_relay_command('deny', user_id, action)
+        # Determine sensor location based on device_id
+        sensor_location = None
+        if device_id == 'AS608_001':
+            sensor_location = 'masuk'
+        elif device_id == 'AS608_002':
+            sensor_location = 'keluar'
+        
+        # Send MQTT command to control relay (include device_id)
+        success = send_relay_command('deny', user_id, action, device_id)
         
         if success:
-            # Log to database
-            log_manual_action(user_id, action, 'denied')
+            # Log to database with device_id
+            log_manual_action(user_id, action, 'denied', device_id, sensor_location)
             
             emit('action_result', {
                 'status': 'success',
                 'message': f'Access denied for {username} (ID: {user_id})',
                 'action': 'denied'
             })
-            logger.info(f"✓ Access denied for user {user_id} ({username})")
+            logger.info(f"✓ Access denied for user {user_id} ({username}) from {device_id}")
         else:
             emit('action_result', {
                 'status': 'error',
@@ -703,7 +722,7 @@ def handle_deny_access(data):
             'message': str(e)
         })
 
-def send_relay_command(command, user_id, action):
+def send_relay_command(command, user_id, action, device_id=None):
     """Send relay control command via MQTT"""
     try:
         # Ensure MQTT connection is active
@@ -720,17 +739,18 @@ def send_relay_command(command, user_id, action):
             'user_id': user_id,
             'action': action,
             'timestamp': datetime.now().isoformat(),
-            'source': 'web_ui'
+            'source': 'web_ui',
+            'device_id': device_id  # Include device_id for multi-sensor support
         }
         
-        logger.info(f"📤 Sending relay command: {command} for user {user_id}")
+        logger.info(f"📤 Sending relay command: {command} for user {user_id} from device {device_id}")
         logger.info(f"📤 MQTT Topic: {MQTT_ACTION_TOPIC}")
         logger.info(f"📤 Payload: {payload}")
         
         result = mqtt_client.publish(MQTT_ACTION_TOPIC, json.dumps(payload), qos=1)
         
         if result.rc == mqtt.MQTT_ERR_SUCCESS:
-            logger.info(f"✓ Relay command sent successfully: {command} for user {user_id}")
+            logger.info(f"✓ Relay command sent successfully: {command} for user {user_id} from {device_id}")
             return True
         else:
             logger.error(f"✗ Failed to send relay command (rc: {result.rc})")
@@ -774,6 +794,113 @@ def log_manual_action(user_id, action, granted_denied, device_id=None, sensor_lo
         
     except Exception as e:
         logger.error(f"Error logging manual action: {e}")
+        return False
+
+def update_attendance(user_id, username, device_id, sensor_location, status):
+    """Update attendance tracking when access is granted
+    
+    Clock In: First granted access of the day (from AS608_001 or sensor_location='masuk')
+    Clock Out: Last granted access of the day (from AS608_002 or sensor_location='keluar')
+    """
+    try:
+        if status != 'granted' or not user_id or user_id <= 0:
+            return False
+        
+        conn = get_db_connection()
+        if not conn:
+            return False
+        
+        cursor = conn.cursor()
+        now = datetime.now()
+        today = now.date()
+        
+        # Check if attendance record exists for today
+        cursor.execute("""
+            SELECT id, clock_in, clock_out, first_granted, last_granted, total_granted, device_id_in, device_id_out
+            FROM attendance
+            WHERE user_id = %s AND attendance_date = %s
+        """, (user_id, today))
+        
+        record = cursor.fetchone()
+        
+        # Determine if this is clock in or clock out
+        is_clock_in = (device_id == 'AS608_001' or sensor_location == 'masuk')
+        is_clock_out = (device_id == 'AS608_002' or sensor_location == 'keluar')
+        
+        if record:
+            # Update existing record
+            record_id, clock_in, clock_out, first_granted, last_granted, total_granted, device_id_in, device_id_out = record
+            
+            # Update clock_in if this is first access and clock_in is not set
+            if is_clock_in and clock_in is None:
+                clock_in = now
+                device_id_in = device_id
+                sensor_location_in = sensor_location
+            else:
+                sensor_location_in = sensor_location if is_clock_in else None
+            
+            # Update clock_out if this is last access (always update if it's clock out)
+            if is_clock_out:
+                clock_out = now
+                device_id_out = device_id
+                sensor_location_out = sensor_location
+            else:
+                sensor_location_out = sensor_location if is_clock_out else None
+            
+            # Update first_granted if this is earlier
+            if first_granted is None or now < first_granted:
+                first_granted = now
+            
+            # Update last_granted if this is later
+            if last_granted is None or now > last_granted:
+                last_granted = now
+            
+            # Increment total_granted
+            total_granted = (total_granted or 0) + 1
+            
+            cursor.execute("""
+                UPDATE attendance
+                SET clock_in = COALESCE(%s, clock_in),
+                    clock_out = COALESCE(%s, clock_out),
+                    first_granted = %s,
+                    last_granted = %s,
+                    total_granted = %s,
+                    device_id_in = COALESCE(%s, device_id_in),
+                    device_id_out = COALESCE(%s, device_id_out),
+                    sensor_location_in = COALESCE(%s, sensor_location_in),
+                    sensor_location_out = COALESCE(%s, sensor_location_out),
+                    updated_at = %s
+                WHERE id = %s
+            """, (clock_in, clock_out, first_granted, last_granted, total_granted,
+                  device_id_in, device_id_out, sensor_location, sensor_location, now, record_id))
+        else:
+            # Create new record
+            clock_in = now if is_clock_in else None
+            clock_out = now if is_clock_out else None
+            
+            cursor.execute("""
+                INSERT INTO attendance (
+                    user_id, username, attendance_date, clock_in, clock_out,
+                    first_granted, last_granted, total_granted,
+                    device_id_in, device_id_out, sensor_location_in, sensor_location_out
+                )
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """, (user_id, username, today, clock_in, clock_out, now, now, 1,
+                  device_id_in if is_clock_in else None,
+                  device_id_out if is_clock_out else None,
+                  sensor_location if is_clock_in else None,
+                  sensor_location if is_clock_out else None))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✓ Attendance updated for user {user_id} ({username}) - {sensor_location or device_id}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error updating attendance: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False
 
 # Authentication functions
@@ -1467,6 +1594,166 @@ def mqtt_status():
             'mqtt_connected': False
         })
 
+@app.route('/api/attendance')
+@login_required
+def get_attendance():
+    """Get attendance records with optional filters"""
+    try:
+        user_id = request.args.get('user_id', type=int)
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        page = request.args.get('page', 1, type=int)
+        per_page = request.args.get('per_page', 50, type=int)
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Build query
+        query = "SELECT * FROM attendance_summary WHERE 1=1"
+        params = []
+        
+        if user_id:
+            query += " AND user_id = %s"
+            params.append(user_id)
+        
+        if start_date:
+            query += " AND attendance_date >= %s"
+            params.append(start_date)
+        
+        if end_date:
+            query += " AND attendance_date <= %s"
+            params.append(end_date)
+        
+        # Get total count
+        count_query = f"SELECT COUNT(*) FROM ({query}) as subquery"
+        cursor.execute(count_query, params)
+        total = cursor.fetchone()['count']
+        
+        # Add pagination
+        query += " ORDER BY attendance_date DESC, user_id LIMIT %s OFFSET %s"
+        params.extend([per_page, (page - 1) * per_page])
+        
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+        
+        conn.close()
+        
+        return jsonify({
+            'attendance': [dict(record) for record in records],
+            'total': total,
+            'page': page,
+            'per_page': per_page,
+            'total_pages': (total + per_page - 1) // per_page
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting attendance: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/attendance/report')
+@login_required
+def get_attendance_report():
+    """Get attendance report for specific user or all users"""
+    try:
+        user_id = request.args.get('user_id', type=int)
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        
+        # Default to current month if no dates provided
+        if not start_date:
+            start_date = datetime.now().replace(day=1).date().isoformat()
+        if not end_date:
+            end_date = datetime.now().date().isoformat()
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Build query
+        query = """
+            SELECT 
+                user_id,
+                username,
+                COUNT(*) as days_present,
+                MIN(attendance_date) as first_date,
+                MAX(attendance_date) as last_date,
+                SUM(CASE WHEN clock_in IS NOT NULL THEN 1 ELSE 0 END) as clock_in_count,
+                SUM(CASE WHEN clock_out IS NOT NULL THEN 1 ELSE 0 END) as clock_out_count,
+                AVG(hours_worked) as avg_hours_worked,
+                SUM(total_granted) as total_access_granted
+            FROM attendance_summary
+            WHERE attendance_date BETWEEN %s AND %s
+        """
+        params = [start_date, end_date]
+        
+        if user_id:
+            query += " AND user_id = %s"
+            params.append(user_id)
+        
+        query += " GROUP BY user_id, username ORDER BY user_id"
+        
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+        
+        conn.close()
+        
+        return jsonify({
+            'report': [dict(record) for record in records],
+            'start_date': start_date,
+            'end_date': end_date,
+            'generated_at': datetime.now().isoformat()
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting attendance report: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/attendance/user/<int:user_id>')
+@login_required
+def get_user_attendance(user_id):
+    """Get attendance records for specific user"""
+    try:
+        start_date = request.args.get('start_date')
+        end_date = request.args.get('end_date')
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        query = "SELECT * FROM attendance_summary WHERE user_id = %s"
+        params = [user_id]
+        
+        if start_date:
+            query += " AND attendance_date >= %s"
+            params.append(start_date)
+        
+        if end_date:
+            query += " AND attendance_date <= %s"
+            params.append(end_date)
+        
+        query += " ORDER BY attendance_date DESC"
+        
+        cursor.execute(query, params)
+        records = cursor.fetchall()
+        
+        conn.close()
+        
+        return jsonify({
+            'user_id': user_id,
+            'attendance': [dict(record) for record in records]
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting user attendance: {e}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/simulate_scan')
 @login_required
 def simulate_scan():
@@ -1901,18 +2188,76 @@ def add_user():
     """Add new user to store_001"""
     try:
         data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided. Please send JSON data.'}), 400
+        
         user_id = data.get('user_id')
         username = data.get('username')
         finger_template_id = data.get('finger_template_id')
         
-        if not all([user_id, username, finger_template_id]):
-            return jsonify({'error': 'Missing required fields'}), 400
+        # Validate each field with specific error messages
+        errors = []
+        
+        # Validate user_id
+        if user_id is None:
+            errors.append('user_id is required')
+        elif isinstance(user_id, str) and not user_id.strip():
+            errors.append('user_id cannot be empty')
+        else:
+            try:
+                user_id = int(user_id)
+                if user_id <= 0:
+                    errors.append('user_id must be a positive integer')
+            except (ValueError, TypeError):
+                errors.append('user_id must be a valid integer')
+        
+        # Validate username
+        if not username:
+            errors.append('username is required')
+        elif isinstance(username, str) and not username.strip():
+            errors.append('username cannot be empty')
+        else:
+            username = str(username).strip()
+            if len(username) == 0:
+                errors.append('username cannot be empty')
+        
+        # Validate finger_template_id
+        if finger_template_id is None:
+            errors.append('finger_template_id is required')
+        elif isinstance(finger_template_id, str) and not finger_template_id.strip():
+            errors.append('finger_template_id cannot be empty')
+        else:
+            try:
+                finger_template_id = int(finger_template_id)
+                if finger_template_id <= 0:
+                    errors.append('finger_template_id must be a positive integer')
+            except (ValueError, TypeError):
+                errors.append('finger_template_id must be a valid integer')
+        
+        if errors:
+            return jsonify({
+                'error': 'Validation failed',
+                'details': errors
+            }), 400
         
         conn = get_db_connection()
         if not conn:
             return jsonify({'error': 'Database connection failed'}), 500
         
         cursor = conn.cursor()
+        
+        # Check if user_id already exists
+        cursor.execute("SELECT user_id FROM store_001 WHERE user_id = %s", (user_id,))
+        if cursor.fetchone():
+            conn.close()
+            return jsonify({'error': f'User ID {user_id} already exists'}), 400
+        
+        # Check if finger_template_id already exists
+        cursor.execute("SELECT user_id FROM store_001 WHERE finger_template_id = %s", (finger_template_id,))
+        existing = cursor.fetchone()
+        if existing:
+            conn.close()
+            return jsonify({'error': f'Fingerprint template ID {finger_template_id} is already assigned to user ID {existing[0]}'}), 400
         
         cursor.execute("""
             INSERT INTO store_001 (user_id, username, finger_template_id)
@@ -1926,10 +2271,29 @@ def add_user():
         conn.commit()
         conn.close()
         
+        logger.info(f"User added successfully: ID={user_id}, username={username}, template_id={finger_template_id}")
         return jsonify({'message': 'User added successfully'})
         
+    except psycopg2.IntegrityError as e:
+        logger.error(f"Database integrity error adding user: {e}")
+        if 'conn' in locals():
+            try:
+                conn.rollback()
+                conn.close()
+            except:
+                pass
+        error_msg = str(e)
+        if 'unique constraint' in error_msg.lower() or 'duplicate key' in error_msg.lower():
+            return jsonify({'error': 'User ID or fingerprint template ID already exists'}), 400
+        return jsonify({'error': f'Database constraint violation: {error_msg}'}), 400
     except Exception as e:
-        logger.error(f"Error adding user: {e}")
+        logger.error(f"Error adding user: {e}", exc_info=True)
+        if 'conn' in locals():
+            try:
+                conn.rollback()
+                conn.close()
+            except:
+                pass
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/delete_user/<int:user_id>', methods=['DELETE'])

@@ -55,3 +55,5 @@ WHERE tc.constraint_type = 'FOREIGN KEY'
 
 -- Expected result: delete_rule harus 'CASCADE'
 
+
+

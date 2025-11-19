@@ -23,3 +23,5 @@ ORDER BY id;
 -- Catatan: Uncomment COMMIT atau ROLLBACK sesuai kebutuhan
 -- Setelah yakin, jalankan COMMIT untuk menyimpan perubahan
 
+
+

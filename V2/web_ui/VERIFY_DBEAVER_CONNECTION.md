@@ -290,3 +290,5 @@ Jika `client_addr` adalah IP dari host machine (bukan container IP), berarti con
 2. Tidak ada PostgreSQL lokal yang conflict di port 5432
 3. Password dan database name sesuai dengan docker-compose.yml
 
+
+

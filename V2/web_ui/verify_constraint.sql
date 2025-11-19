@@ -17,3 +17,5 @@ WHERE tc.table_name = 'user_sessions'
 -- Jika delete_rule = 'NO ACTION' atau 'RESTRICT', berarti constraint belum di-fix
 -- Jika delete_rule = 'CASCADE', berarti constraint sudah benar ✅
 
+
+

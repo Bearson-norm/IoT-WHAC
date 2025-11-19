@@ -96,3 +96,5 @@ Write-Host "2. Stop LOCAL PostgreSQL service if found above" -ForegroundColor Wh
 Write-Host "3. After stopping, only Docker should listen on port 5432" -ForegroundColor White
 Write-Host "============================================================" -ForegroundColor Cyan
 
+
+
