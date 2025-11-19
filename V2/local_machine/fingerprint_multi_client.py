@@ -437,31 +437,89 @@ class MultiSensorFingerprintClient:
     def handle_add_user(self, payload):
         """Handle add user command - enrolls to all sensors"""
         try:
-            username = payload.get('username')
-            if not username:
-                logger.error("Username not provided")
+            # Extract command data - using 'user_name' to match Web UI
+            fingerprint_id = payload.get('fingerprint_id')
+            user_name = payload.get('user_name')
+            
+            if not fingerprint_id or not user_name:
+                logger.error(f"Missing required fields: fingerprint_id={fingerprint_id}, user_name={user_name}")
+                self.send_command_response("add_user", "error", {
+                    "message": "Missing fingerprint_id or user_name in add user command"
+                })
                 return
             
-            logger.info(f"📝 Adding user '{username}' to all sensors...")
+            logger.info(f"📝 Adding user '{user_name}' (ID: {fingerprint_id}) to all sensors...")
             
-            # Try to enroll on first available sensor
-            for sensor in self.sensors:
-                if not sensor.connected:
-                    continue
+            # Set enrolling flag to pause scanning
+            self.enrolling = True
+            logger.info("⏸️  Pausing fingerprint scanning during enrollment...")
+            
+            # Wait for scanning loops to stop
+            time.sleep(0.5)
+            
+            enrollment_success = False
+            enrolled_sensor = None
+            
+            try:
+                # Try to enroll on first available sensor
+                for sensor in self.sensors:
+                    if not sensor.connected:
+                        logger.warning(f"[{sensor.device_id}] Sensor not connected, skipping...")
+                        continue
+                    
+                    try:
+                        with sensor.lock:
+                            logger.info(f"[{sensor.device_id}] Starting enrollment for {user_name}...")
+                            
+                            # Enroll fingerprint
+                            if self.enroll_fingerprint_on_sensor(sensor, fingerprint_id):
+                                # Save to database
+                                conn = sqlite3.connect(self.db_file)
+                                cursor = conn.cursor()
+                                cursor.execute('''
+                                    INSERT OR REPLACE INTO users (fingerprint_id, username)
+                                    VALUES (?, ?)
+                                ''', (fingerprint_id, user_name))
+                                conn.commit()
+                                conn.close()
+                                
+                                logger.info(f"[{sensor.device_id}] ✓ User enrolled successfully: {user_name} (ID: {fingerprint_id})")
+                                enrollment_success = True
+                                enrolled_sensor = sensor.device_id
+                                break
+                            else:
+                                logger.error(f"[{sensor.device_id}] ✗ Failed to enroll fingerprint")
+                                
+                    except Exception as e:
+                        logger.error(f"[{sensor.device_id}] Enrollment error: {e}")
+                        continue
                 
-                try:
-                    with sensor.lock:
-                        logger.info(f"[{sensor.device_id}] Starting enrollment for {username}")
-                        # Enrollment logic here (simplified - you may need to expand this)
-                        # For now, just acknowledge
-                        logger.info(f"[{sensor.device_id}] Enrollment completed for {username}")
-                        break
-                except Exception as e:
-                    logger.error(f"[{sensor.device_id}] Enrollment error: {e}")
-                    continue
+                # Send response to Web UI
+                if enrollment_success:
+                    self.send_command_response("add_user", "success", {
+                        "fingerprint_id": fingerprint_id,
+                        "user_name": user_name,
+                        "device_id": enrolled_sensor,
+                        "message": f"User enrolled successfully on {enrolled_sensor}"
+                    })
+                    logger.info(f"✅ Enrollment completed successfully on {enrolled_sensor}")
+                else:
+                    self.send_command_response("add_user", "error", {
+                        "message": "Failed to enroll fingerprint on any sensor"
+                    })
+                    logger.error(f"❌ Enrollment failed on all sensors")
+                    
+            finally:
+                # Always resume scanning after enrollment
+                self.enrolling = False
+                logger.info("▶️  Resuming fingerprint scanning...")
                     
         except Exception as e:
             logger.error(f"Error in handle_add_user: {e}")
+            self.enrolling = False  # Ensure flag is reset on error
+            self.send_command_response("add_user", "error", {
+                "message": f"Error: {str(e)}"
+            })
     
     def handle_import(self, payload):
         """Handle import command"""
@@ -512,6 +570,149 @@ class MultiSensorFingerprintClient:
                 
         except Exception as e:
             logger.error(f"Error sending relay status: {e}")
+            return False
+    
+    def send_command_response(self, command_type, status, data):
+        """Send command response back to MQTT"""
+        try:
+            response = {
+                "store_id": STORE_ID,
+                "timestamp": datetime.now().isoformat(),
+                "command": command_type,
+                "status": status,
+                "data": data,
+                "device_id": "MULTI_SENSOR"
+            }
+            
+            response_topic = f"WHAC/Store001/{command_type}_response"
+            payload = json.dumps(response)
+            result = self.mqtt_client.publish(response_topic, payload, qos=MQTT_QOS)
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"✓ Command response sent: {command_type} - {status}")
+            else:
+                logger.error(f"✗ Failed to send command response (rc: {result.rc})")
+                
+        except Exception as e:
+            logger.error(f"Error sending command response: {e}")
+    
+    def enroll_fingerprint_on_sensor(self, sensor, location):
+        """Enroll a new fingerprint on specified sensor at the specified location"""
+        ENROLLMENT_TIMEOUT = 30  # seconds timeout for each step
+        PROGRESS_INTERVAL = 5    # seconds between progress logs
+        
+        try:
+            logger.info(f"[{sensor.device_id}] Starting fingerprint enrollment at location {location}")
+            
+            # Check if sensor is connected
+            if not sensor.connected or not sensor.finger:
+                logger.error(f"[{sensor.device_id}] ❌ Fingerprint sensor not connected!")
+                return False
+            
+            # First scan with timeout
+            logger.info(f"[{sensor.device_id}] Place finger on sensor for first scan...")
+            start_time = time.time()
+            last_progress_time = start_time
+            
+            while True:
+                # Check timeout
+                if time.time() - start_time > ENROLLMENT_TIMEOUT:
+                    logger.error(f"[{sensor.device_id}] ❌ Enrollment timeout: No finger detected within {ENROLLMENT_TIMEOUT} seconds")
+                    return False
+                
+                # Progress feedback every PROGRESS_INTERVAL seconds
+                current_time = time.time()
+                if current_time - last_progress_time >= PROGRESS_INTERVAL:
+                    elapsed = int(current_time - start_time)
+                    logger.info(f"[{sensor.device_id}] ⏳ Waiting for finger... ({elapsed}/{ENROLLMENT_TIMEOUT}s)")
+                    last_progress_time = current_time
+                
+                i = sensor.finger.get_image()
+                if i == adafruit_fingerprint.OK:
+                    break
+                elif i == adafruit_fingerprint.NOFINGER:
+                    time.sleep(0.1)
+                    continue
+                else:
+                    logger.error(f"[{sensor.device_id}] Error getting first image: {i}")
+                    return False
+            
+            logger.info(f"[{sensor.device_id}] ✓ First image captured!")
+            
+            if sensor.finger.image_2_tz(1) != adafruit_fingerprint.OK:
+                logger.error(f"[{sensor.device_id}] Error converting first image to template")
+                return False
+            
+            logger.info(f"[{sensor.device_id}] ✓ First image converted to template")
+            logger.info(f"[{sensor.device_id}] Remove finger...")
+            time.sleep(2)
+            
+            # Wait for finger removal with timeout
+            logger.info(f"[{sensor.device_id}] Waiting for finger removal...")
+            start_time = time.time()
+            while sensor.finger.get_image() != adafruit_fingerprint.NOFINGER:
+                if time.time() - start_time > 10:
+                    logger.warning(f"[{sensor.device_id}] ⚠️ Finger still detected after 10 seconds, continuing anyway...")
+                    break
+                time.sleep(0.1)
+            
+            logger.info(f"[{sensor.device_id}] ✓ Finger removed")
+            
+            # Second scan with timeout
+            logger.info(f"[{sensor.device_id}] Place same finger again for second scan...")
+            start_time = time.time()
+            last_progress_time = start_time
+            
+            while True:
+                # Check timeout
+                if time.time() - start_time > ENROLLMENT_TIMEOUT:
+                    logger.error(f"[{sensor.device_id}] ❌ Enrollment timeout: No finger detected for second scan within {ENROLLMENT_TIMEOUT} seconds")
+                    return False
+                
+                # Progress feedback
+                current_time = time.time()
+                if current_time - last_progress_time >= PROGRESS_INTERVAL:
+                    elapsed = int(current_time - start_time)
+                    logger.info(f"[{sensor.device_id}] ⏳ Waiting for second scan... ({elapsed}/{ENROLLMENT_TIMEOUT}s)")
+                    last_progress_time = current_time
+                
+                i = sensor.finger.get_image()
+                if i == adafruit_fingerprint.OK:
+                    break
+                elif i == adafruit_fingerprint.NOFINGER:
+                    time.sleep(0.1)
+                    continue
+                else:
+                    logger.error(f"[{sensor.device_id}] Error getting second image: {i}")
+                    return False
+            
+            logger.info(f"[{sensor.device_id}] ✓ Second image captured!")
+            
+            if sensor.finger.image_2_tz(2) != adafruit_fingerprint.OK:
+                logger.error(f"[{sensor.device_id}] Error converting second image to template")
+                return False
+            
+            logger.info(f"[{sensor.device_id}] ✓ Second image converted to template")
+            
+            # Create model
+            logger.info(f"[{sensor.device_id}] Creating fingerprint model...")
+            if sensor.finger.create_model() != adafruit_fingerprint.OK:
+                logger.error(f"[{sensor.device_id}] Error creating model - fingers may not match")
+                return False
+            
+            logger.info(f"[{sensor.device_id}] ✓ Fingerprint model created successfully")
+            
+            # Store model
+            logger.info(f"[{sensor.device_id}] Storing model at location {location}...")
+            if sensor.finger.store_model(location) != adafruit_fingerprint.OK:
+                logger.error(f"[{sensor.device_id}] Error storing model")
+                return False
+            
+            logger.info(f"[{sensor.device_id}] ✅ Fingerprint enrolled successfully at location {location}!")
+            return True
+            
+        except Exception as e:
+            logger.error(f"[{sensor.device_id}] Error during enrollment: {e}")
             return False
     
     def send_scan_result(self, sensor, status, fingerprint_id, confidence=None):
