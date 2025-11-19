@@ -2420,7 +2420,9 @@ def enroll_user():
                 
                 if existing_user:
                     logger.warning(f"⚠️  User ID {user_id} already exists in database")
-                    return jsonify({'error': f'User ID {user_id} already exists'}), 400
+                    logger.info(f"ℹ️  Allowing re-enrollment for multi-sensor support (will update existing user)")
+                    # Don't reject - allow re-enrollment for multi-sensor system
+                    # This is needed so the same fingerprint can be enrolled on multiple sensors
                 else:
                     logger.info(f"✅ User ID {user_id} is available")
             else:
@@ -2525,6 +2527,134 @@ def enroll_user():
         logger.error(f"❌ Full Traceback:\n{traceback.format_exc()}")
         logger.error("=" * 80)
         return jsonify({'error': f'Server error: {str(e)}'}), 500
+
+@app.route('/api/play_audio', methods=['POST'])
+@login_required
+def play_audio():
+    """Send audio playback command to local machine via MQTT"""
+    try:
+        data = request.get_json()
+        audio_type = data.get('audio_type', 'beep')  # beep, success, error, welcome
+        message = data.get('message', '')
+        
+        logger.info(f"🔊 Audio command received: type={audio_type}, message={message}")
+        
+        # Ensure MQTT connection
+        if not ensure_mqtt_connection():
+            return jsonify({'error': 'MQTT not connected'}), 503
+        
+        # Prepare audio command
+        audio_command = {
+            'command': 'play_audio',
+            'audio_type': audio_type,
+            'message': message,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'web_ui',
+            'requested_by': session.get('username', 'admin')
+        }
+        
+        # Publish to MQTT
+        result = mqtt_client.publish('WHAC/Store001/audio', json.dumps(audio_command), qos=1)
+        
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            logger.info(f"✅ Audio command sent: {audio_type}")
+            return jsonify({
+                'status': 'success',
+                'message': f'Audio command sent: {audio_type}'
+            })
+        else:
+            logger.error(f"❌ Failed to send audio command (rc: {result.rc})")
+            return jsonify({'error': 'Failed to send audio command'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error sending audio command: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/manual_relay', methods=['POST'])
+@login_required
+def manual_relay():
+    """Manual relay control - open relay directly without fingerprint scan"""
+    try:
+        data = request.get_json()
+        duration = data.get('duration', 5)  # Default 5 seconds
+        device_id = data.get('device_id', 'ALL')  # ALL or specific sensor
+        
+        logger.info(f"🚪 Manual relay command: duration={duration}s, device={device_id}")
+        
+        # Ensure MQTT connection
+        if not ensure_mqtt_connection():
+            return jsonify({'error': 'MQTT not connected'}), 503
+        
+        # Prepare relay command
+        relay_command = {
+            'command': 'manual_relay',
+            'action': 'grant',
+            'duration': duration,
+            'device_id': device_id,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'web_ui',
+            'requested_by': session.get('username', 'admin'),
+            'manual': True  # Flag to indicate manual control
+        }
+        
+        # Publish to MQTT action topic
+        result = mqtt_client.publish(MQTT_ACTION_TOPIC, json.dumps(relay_command), qos=1)
+        
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            logger.info(f"✅ Manual relay command sent: {duration}s")
+            
+            # Log to database
+            log_manual_action(0, 'manual_relay_open', 'granted', device_id, None)
+            
+            return jsonify({
+                'status': 'success',
+                'message': f'Relay opened for {duration} seconds',
+                'duration': duration,
+                'device_id': device_id
+            })
+        else:
+            logger.error(f"❌ Failed to send relay command (rc: {result.rc})")
+            return jsonify({'error': 'Failed to send relay command'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error sending manual relay command: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/system_check', methods=['POST'])
+@login_required
+def system_check():
+    """Trigger system self-check on local machine"""
+    try:
+        logger.info("🔍 System check requested")
+        
+        # Ensure MQTT connection
+        if not ensure_mqtt_connection():
+            return jsonify({'error': 'MQTT not connected'}), 503
+        
+        # Prepare check command
+        check_command = {
+            'command': 'system_check',
+            'timestamp': datetime.now().isoformat(),
+            'source': 'web_ui',
+            'requested_by': session.get('username', 'admin')
+        }
+        
+        # Publish to MQTT
+        result = mqtt_client.publish('WHAC/Store001/system', json.dumps(check_command), qos=1)
+        
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            logger.info("✅ System check command sent")
+            return jsonify({
+                'status': 'success',
+                'message': 'System check initiated. Check local machine logs for results.'
+            })
+        else:
+            logger.error(f"❌ Failed to send system check command (rc: {result.rc})")
+            return jsonify({'error': 'Failed to send system check command'}), 500
+            
+    except Exception as e:
+        logger.error(f"Error sending system check command: {e}")
+        return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
     logger.info("=" * 80)
