@@ -435,11 +435,18 @@ class MultiSensorFingerprintClient:
                 logger.error(f"Error handling command: {e}")
     
     def handle_add_user(self, payload):
-        """Handle add user command - enrolls to all sensors"""
+        """Handle add user command - smart enrollment to sensors
+        
+        Supports:
+        1. Target sensor selection (if 'target_sensor' specified)
+        2. Smart enrollment (enroll to sensor that doesn't have this fingerprint ID yet)
+        3. Re-enrollment (allow updating existing fingerprint)
+        """
         try:
             # Extract command data - using 'user_name' to match Web UI
             fingerprint_id = payload.get('fingerprint_id')
             user_name = payload.get('user_name')
+            target_sensor = payload.get('target_sensor')  # Optional: specific sensor to enroll
             
             if not fingerprint_id or not user_name:
                 logger.error(f"Missing required fields: fingerprint_id={fingerprint_id}, user_name={user_name}")
@@ -448,7 +455,15 @@ class MultiSensorFingerprintClient:
                 })
                 return
             
-            logger.info(f"📝 Adding user '{user_name}' (ID: {fingerprint_id}) to all sensors...")
+            # Check which sensors already have this fingerprint ID
+            enrolled_sensors = self.check_fingerprint_enrollment(fingerprint_id)
+            
+            if enrolled_sensors:
+                logger.info(f"ℹ️  Fingerprint ID {fingerprint_id} already enrolled on: {', '.join(enrolled_sensors)}")
+            
+            logger.info(f"📝 Adding user '{user_name}' (ID: {fingerprint_id}) to sensors...")
+            if target_sensor:
+                logger.info(f"🎯 Target sensor: {target_sensor}")
             
             # Set enrolling flag to pause scanning
             self.enrolling = True
@@ -461,12 +476,38 @@ class MultiSensorFingerprintClient:
             enrolled_sensor = None
             
             try:
-                # Try to enroll on first available sensor
-                for sensor in self.sensors:
-                    if not sensor.connected:
-                        logger.warning(f"[{sensor.device_id}] Sensor not connected, skipping...")
-                        continue
+                # Select sensors to try enrollment
+                sensors_to_try = []
+                
+                if target_sensor:
+                    # Try specific sensor if specified
+                    for sensor in self.sensors:
+                        if sensor.device_id == target_sensor and sensor.connected:
+                            sensors_to_try = [sensor]
+                            break
+                    if not sensors_to_try:
+                        logger.error(f"Target sensor {target_sensor} not found or not connected")
+                        raise Exception(f"Target sensor {target_sensor} not available")
+                else:
+                    # Smart selection: prioritize sensors that don't have this fingerprint yet
+                    for sensor in self.sensors:
+                        if not sensor.connected:
+                            continue
+                        # Enroll to first available sensor (user can enroll again for other sensor)
+                        if sensor.device_id not in enrolled_sensors:
+                            sensors_to_try = [sensor]
+                            break
                     
+                    # If all sensors already have it, use first available (re-enrollment)
+                    if not sensors_to_try:
+                        for sensor in self.sensors:
+                            if sensor.connected:
+                                sensors_to_try = [sensor]
+                                logger.info(f"ℹ️  Re-enrolling on {sensor.device_id} (fingerprint will be updated)")
+                                break
+                
+                # Try enrollment on selected sensor
+                for sensor in sensors_to_try:
                     try:
                         with sensor.lock:
                             logger.info(f"[{sensor.device_id}] Starting enrollment for {user_name}...")
@@ -496,13 +537,25 @@ class MultiSensorFingerprintClient:
                 
                 # Send response to Web UI
                 if enrollment_success:
+                    # Check updated enrollment status
+                    updated_enrolled = self.check_fingerprint_enrollment(fingerprint_id)
+                    remaining_sensors = [s.device_id for s in self.sensors if s.connected and s.device_id not in updated_enrolled]
+                    
+                    response_message = f"User enrolled successfully on {enrolled_sensor}"
+                    if remaining_sensors:
+                        response_message += f". You can enroll the same user on remaining sensors: {', '.join(remaining_sensors)}"
+                    
                     self.send_command_response("add_user", "success", {
                         "fingerprint_id": fingerprint_id,
                         "user_name": user_name,
                         "device_id": enrolled_sensor,
-                        "message": f"User enrolled successfully on {enrolled_sensor}"
+                        "enrolled_sensors": updated_enrolled,
+                        "remaining_sensors": remaining_sensors,
+                        "message": response_message
                     })
                     logger.info(f"✅ Enrollment completed successfully on {enrolled_sensor}")
+                    if remaining_sensors:
+                        logger.info(f"ℹ️  Remaining sensors for enrollment: {', '.join(remaining_sensors)}")
                 else:
                     self.send_command_response("add_user", "error", {
                         "message": "Failed to enroll fingerprint on any sensor"
@@ -520,6 +573,38 @@ class MultiSensorFingerprintClient:
             self.send_command_response("add_user", "error", {
                 "message": f"Error: {str(e)}"
             })
+    
+    def check_fingerprint_enrollment(self, fingerprint_id):
+        """Check which sensors have this fingerprint ID enrolled
+        
+        Returns:
+            list: Device IDs that have this fingerprint enrolled
+        """
+        try:
+            enrolled_sensors = []
+            
+            for sensor in self.sensors:
+                if not sensor.connected:
+                    continue
+                
+                try:
+                    with sensor.lock:
+                        # Check if fingerprint exists on sensor
+                        result = sensor.finger.load_model(fingerprint_id)
+                        if result == adafruit_fingerprint.OK:
+                            enrolled_sensors.append(sensor.device_id)
+                            logger.debug(f"[{sensor.device_id}] Fingerprint {fingerprint_id} exists")
+                        else:
+                            logger.debug(f"[{sensor.device_id}] Fingerprint {fingerprint_id} not found")
+                except Exception as e:
+                    logger.debug(f"[{sensor.device_id}] Error checking fingerprint: {e}")
+                    continue
+            
+            return enrolled_sensors
+            
+        except Exception as e:
+            logger.error(f"Error checking fingerprint enrollment: {e}")
+            return []
     
     def handle_import(self, payload):
         """Handle import command"""
