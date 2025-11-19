@@ -22,6 +22,13 @@ import os
 from datetime import datetime
 from config import *
 
+try:
+    from audio_feedback import audio_feedback
+    AUDIO_ENABLED = True
+except ImportError:
+    AUDIO_ENABLED = False
+    logger.warning("Audio feedback module not available")
+
 # Configure logging
 logging.basicConfig(
     level=getattr(logging, LOG_LEVEL),
@@ -45,6 +52,10 @@ class SensorConnection:
         self.connected = False
         self.last_scan_time = 0
         self.lock = threading.Lock()  # Lock for thread-safe operations
+        self.audio = audio_feedback if AUDIO_ENABLED else None
+        self.AUDIO_TOPIC = "WHAC/Store001/audio"
+        self.SYSTEM_TOPIC = "WHAC/Store001/system"
+
         
     def connect(self, retries=3):
         """Connect to AS608 fingerprint sensor"""
@@ -392,6 +403,11 @@ class MultiSensorFingerprintClient:
             return False
     
     def on_mqtt_connect(self, client, userdata, flags, rc):
+        # Subscribe to audio and system topics
+        client.subscribe(self.AUDIO_TOPIC, qos=1)
+        client.subscribe(self.SYSTEM_TOPIC, qos=1)
+        logger.info(f"✅ Subscribed to {self.AUDIO_TOPIC}")
+        logger.info(f"✅ Subscribed to {self.SYSTEM_TOPIC}")
         """MQTT connection callback"""
         if rc == 0:
             self.connected = True
@@ -431,6 +447,10 @@ class MultiSensorFingerprintClient:
                     self.handle_export(payload)
                 elif topic == self.ACTION_TOPIC:
                     self.handle_relay_action(payload)
+                elif topic == self.AUDIO_TOPIC:
+                    self.handle_audio_command(payload)
+                elif topic == self.SYSTEM_TOPIC:
+                    self.handle_system_command(payload)
             except Exception as e:
                 logger.error(f"Error handling command: {e}")
     
@@ -864,6 +884,79 @@ class MultiSensorFingerprintClient:
             logger.error(f"Error getting user info: {e}")
             return None
     
+
+    def handle_audio_command(self, payload):
+        """Handle audio playback command"""
+        try:
+            audio_type = payload.get('audio_type', 'beep')
+            message = payload.get('message', '')
+            logger.info(f"🔊 Audio command received: {audio_type}")
+            if self.audio:
+                self.audio.play_audio_type(audio_type, message)
+                logger.info(f"✅ Audio played: {audio_type}")
+            else:
+                logger.warning("⚠️  Audio not available")
+        except Exception as e:
+            logger.error(f"Error handling audio command: {e}")
+    
+    def handle_system_command(self, payload):
+        """Handle system check command"""
+        try:
+            command = payload.get('command')
+            logger.info(f"🔍 System command received: {command}")
+            if command == 'system_check':
+                self.run_system_check()
+            else:
+                logger.warning(f"Unknown system command: {command}")
+        except Exception as e:
+            logger.error(f"Error handling system command: {e}")
+    
+    def run_system_check(self):
+        """Run system self-check"""
+        try:
+            logger.info("=" * 80)
+            logger.info("🔍 RUNNING SYSTEM SELF-CHECK")
+            logger.info("=" * 80)
+            if self.audio:
+                self.audio.play_audio_type('system_check')
+            logger.info("📡 Checking sensors...")
+            connected_sensors = len([s for s in self.sensors if s.connected])
+            total_sensors = len(self.sensors)
+            logger.info(f"  ✓ Sensors connected: {connected_sensors}/{total_sensors}")
+            logger.info("📡 Checking MQTT...")
+            if self.connected:
+                logger.info("  ✓ MQTT connected")
+            else:
+                logger.warning("  ⚠️  MQTT not connected")
+            logger.info("🔌 Checking relay...")
+            try:
+                import RPi.GPIO as GPIO
+                logger.info(f"  ✓ GPIO available, relay pin: {self.relay_pin}")
+            except:
+                logger.warning("  ⚠️  GPIO not available")
+            logger.info("💾 Checking database...")
+            try:
+                conn = sqlite3.connect(self.db_file)
+                cursor = conn.cursor()
+                cursor.execute("SELECT COUNT(*) FROM users")
+                user_count = cursor.fetchone()[0]
+                conn.close()
+                logger.info(f"  ✓ Database OK, {user_count} users registered")
+            except Exception as e:
+                logger.error(f"  ✗ Database error: {e}")
+
+            logger.info("=" * 80)
+            logger.info("✅ SYSTEM CHECK COMPLETE")
+            logger.info("=" * 80)
+
+            if self.audio:
+                self.audio.play_audio_type('success')
+
+        except Exception as e:
+            logger.error(f"Error running system check: {e}")
+            if self.audio:
+                self.audio.play_audio_type('error')
+
     def scan_fingerprint_standby(self, sensor):
         """Standby fingerprint scanning for a specific sensor"""
         try:
