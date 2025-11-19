@@ -52,9 +52,6 @@ class SensorConnection:
         self.connected = False
         self.last_scan_time = 0
         self.lock = threading.Lock()  # Lock for thread-safe operations
-        self.audio = audio_feedback if AUDIO_ENABLED else None
-        self.AUDIO_TOPIC = "WHAC/Store001/audio"
-        self.SYSTEM_TOPIC = "WHAC/Store001/system"
 
         
     def connect(self, retries=3):
@@ -152,6 +149,11 @@ class MultiSensorFingerprintClient:
         self.EXPORT_TOPIC = "WHAC/Store001/export"  # for exporting users
         self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
         self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
+        self.AUDIO_TOPIC = "WHAC/Store001/audio"  # for audio feedback commands
+        self.SYSTEM_TOPIC = "WHAC/Store001/system"  # for system control commands
+        
+        # Audio feedback
+        self.audio = audio_feedback if AUDIO_ENABLED else None
     
     def init_sensors(self):
         """Initialize sensor connections from config"""
@@ -403,15 +405,16 @@ class MultiSensorFingerprintClient:
             return False
     
     def on_mqtt_connect(self, client, userdata, flags, rc):
-        # Subscribe to audio and system topics
-        client.subscribe(self.AUDIO_TOPIC, qos=1)
-        client.subscribe(self.SYSTEM_TOPIC, qos=1)
-        logger.info(f"✅ Subscribed to {self.AUDIO_TOPIC}")
-        logger.info(f"✅ Subscribed to {self.SYSTEM_TOPIC}")
         """MQTT connection callback"""
         if rc == 0:
             self.connected = True
             logger.info("MQTT client connected")
+            
+            # Subscribe to audio and system topics
+            client.subscribe(self.AUDIO_TOPIC, qos=1)
+            client.subscribe(self.SYSTEM_TOPIC, qos=1)
+            logger.info(f"✅ Subscribed to {self.AUDIO_TOPIC}")
+            logger.info(f"✅ Subscribed to {self.SYSTEM_TOPIC}")
         else:
             logger.error(f"MQTT connection failed with code {rc}")
             self.connected = False
