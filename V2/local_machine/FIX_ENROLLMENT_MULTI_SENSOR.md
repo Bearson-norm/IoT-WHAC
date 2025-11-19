@@ -11,13 +11,24 @@ Error yang terjadi saat enrollment user dari Web UI ke sistem multi-sensor:
 
 ## 🔍 Akar Masalah
 
+### 1. Ketidakcocokan Field Name (MQTT)
 Ketidakcocokan nama field antara Web UI dan Local Machine:
 - **Web UI** mengirim: `user_name`
 - **Local Machine** (multi_sensor) mencari: `username`
 
+### 2. Ketidakcocokan Column Name (Database)
+Ketidakcocokan nama kolom dalam SQLite:
+- **Database schema** menggunakan: `user_name`
+- **INSERT statement** menggunakan: `username`
+
+Error yang muncul:
+```
+ERROR - [AS608_001] Enrollment error: table users has no column named username
+```
+
 ## ✅ Solusi
 
-### 1. Update Field Name
+### 1. Update Field Name (MQTT)
 Mengubah `fingerprint_multi_client.py` untuk menggunakan `user_name` (konsisten dengan Web UI):
 
 ```python
@@ -28,7 +39,24 @@ username = payload.get('username')  # ❌ Tidak cocok dengan Web UI
 user_name = payload.get('user_name')  # ✅ Cocok dengan Web UI
 ```
 
-### 2. Implementasi Enrollment Lengkap
+### 2. Fix Database Column Name
+Mengubah INSERT statement untuk menggunakan `user_name` (konsisten dengan schema):
+
+```python
+# BEFORE:
+cursor.execute('''
+    INSERT OR REPLACE INTO users (fingerprint_id, username)
+    VALUES (?, ?)
+''', (fingerprint_id, user_name))  # ❌ Column 'username' tidak ada
+
+# AFTER:
+cursor.execute('''
+    INSERT OR REPLACE INTO users (fingerprint_id, user_name, device_id)
+    VALUES (?, ?, ?)
+''', (fingerprint_id, user_name, sensor.device_id))  # ✅ Column 'user_name' ada
+```
+
+### 3. Implementasi Enrollment Lengkap
 
 Menambahkan implementasi enrollment yang lengkap:
 - Enrollment dengan timeout (30 detik per step)
@@ -147,16 +175,82 @@ Sekarang `fingerprint_multi_client.py` konsisten dengan:
 
 ## 🚀 Deploy
 
-### Update di Raspberry Pi:
+### Langkah 1: Update Code
+
 ```bash
 cd local_machine
 git pull  # atau copy file manual
-sudo systemctl restart whac-fingerprint  # jika pakai systemd
-# atau
-python3 fingerprint_multi_client.py  # run manual
 ```
 
-### Docker:
+### Langkah 2: Fix Database Schema
+
+Jika Anda sudah pernah run sistem sebelumnya, database mungkin perlu diperbaiki:
+
+```bash
+# Jalankan script fix database
+python3 fix_database_schema.py
+```
+
+Output yang diharapkan:
+```
+============================================================
+🔧 Database Schema Fix Tool
+============================================================
+
+📋 Current Database Schema:
+  - id (INTEGER)
+  - username (TEXT)
+  - fingerprint_id (INTEGER)
+  - created_at (TIMESTAMP)
+
+✅ Database backed up to: database_backups/fingerprints_20251119_092411.db
+💾 Backup created: database_backups/fingerprints_20251119_092411.db
+
+🔄 Starting database migration...
+📝 Migrating from 'username' to 'user_name'...
+✅ Migration completed successfully!
+
+🔍 Verifying database schema...
+✅ Database schema is correct!
+
+📋 Schema:
+  - id (INTEGER)
+  - user_name (TEXT)
+  - fingerprint_id (INTEGER)
+  - device_id (TEXT)
+  - created_at (TIMESTAMP)
+
+============================================================
+✅ Database fix completed!
+============================================================
+```
+
+**Atau hapus database lama dan biarkan recreate:**
+```bash
+# Backup dulu (opsional)
+cp fingerprints.db fingerprints.db.backup
+
+# Hapus database lama
+rm fingerprints.db
+
+# Database baru akan dibuat otomatis saat run client
+```
+
+### Langkah 3: Restart Service
+
+**Jika pakai systemd:**
+```bash
+sudo systemctl restart whac-fingerprint
+sudo systemctl status whac-fingerprint
+```
+
+**Jika run manual:**
+```bash
+# Stop process lama (Ctrl+C jika ada)
+python3 fingerprint_multi_client.py
+```
+
+**Jika pakai Docker:**
 ```bash
 cd local_machine
 docker-compose down

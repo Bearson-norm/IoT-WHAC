@@ -477,9 +477,9 @@ class MultiSensorFingerprintClient:
                                 conn = sqlite3.connect(self.db_file)
                                 cursor = conn.cursor()
                                 cursor.execute('''
-                                    INSERT OR REPLACE INTO users (fingerprint_id, username)
-                                    VALUES (?, ?)
-                                ''', (fingerprint_id, user_name))
+                                    INSERT OR REPLACE INTO users (fingerprint_id, user_name, device_id)
+                                    VALUES (?, ?, ?)
+                                ''', (fingerprint_id, user_name, sensor.device_id))
                                 conn.commit()
                                 conn.close()
                                 
@@ -763,12 +763,15 @@ class MultiSensorFingerprintClient:
         try:
             conn = sqlite3.connect(self.db_file)
             cursor = conn.cursor()
-            cursor.execute("SELECT user_name FROM users WHERE fingerprint_id = ?", (fingerprint_id,))
+            cursor.execute("SELECT user_name, device_id FROM users WHERE fingerprint_id = ?", (fingerprint_id,))
             result = cursor.fetchone()
             conn.close()
             
             if result:
-                return {"username": result[0]}
+                return {
+                    "username": result[0],  # Keep as 'username' for MQTT compatibility
+                    "device_id": result[1] if len(result) > 1 else None
+                }
             else:
                 return None
                 
