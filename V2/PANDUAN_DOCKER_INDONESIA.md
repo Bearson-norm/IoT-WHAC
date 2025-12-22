@@ -535,3 +535,22 @@ Untuk bantuan lebih lanjut, lihat:
 
 **Selamat menggunakan Sistem WHAC Fingerprint dengan Docker! 🎉**
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

@@ -106,3 +106,22 @@ Untuk penjelasan detail, lihat:
 
 **Need Help?** Check logs dengan: `tail -f logs/fingerprint_client.log`
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

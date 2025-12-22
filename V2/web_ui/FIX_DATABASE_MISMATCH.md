@@ -194,3 +194,26 @@ Dengan ini, Web UI dan DBeaver akan menggunakan **database yang sama** (Docker).
 
 
 
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+

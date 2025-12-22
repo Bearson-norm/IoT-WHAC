@@ -19,15 +19,17 @@ import sqlite3
 import threading
 import glob
 import os
+import errno
 from datetime import datetime
 from config import *
 
+# Import audio controller
 try:
-    from audio_feedback import audio_feedback
-    AUDIO_ENABLED = True
+    from audio_controller import get_audio_controller
+    AUDIO_AVAILABLE = True
 except ImportError:
-    AUDIO_ENABLED = False
-    logger.warning("Audio feedback module not available")
+    AUDIO_AVAILABLE = False
+    logger.warning("⚠️  audio_controller not available, audio features disabled")
 
 # Configure logging
 logging.basicConfig(
@@ -43,7 +45,7 @@ logger = logging.getLogger(__name__)
 
 class SensorConnection:
     """Represents a single AS608 sensor connection"""
-    def __init__(self, port, device_id, index):
+    def __init__(self, port, device_id, index, parent_client=None):
         self.port = port
         self.device_id = device_id
         self.index = index
@@ -52,15 +54,62 @@ class SensorConnection:
         self.connected = False
         self.last_scan_time = 0
         self.lock = threading.Lock()  # Lock for thread-safe operations
-
+        self.parent_client = parent_client  # Reference to parent client for port locking
+        self.port_lock_file = None
+        
+    def acquire_port_lock(self):
+        """Acquire exclusive lock on serial port"""
+        if os.name != 'posix':
+            return True
+        
+        lock_file_path = f"/tmp/serial_port_{os.path.basename(self.port)}.lock"
+        
+        if os.path.exists(lock_file_path):
+            try:
+                with open(lock_file_path, 'r') as f:
+                    old_pid = int(f.read().strip())
+                try:
+                    os.kill(old_pid, 0)
+                    logger.error(f"[{self.device_id}] ❌ Port {self.port} is locked by process {old_pid}")
+                    return False
+                except OSError:
+                    os.remove(lock_file_path)
+            except (ValueError, IOError):
+                os.remove(lock_file_path)
+        
+        try:
+            with open(lock_file_path, 'w') as f:
+                f.write(str(os.getpid()))
+            self.port_lock_file = lock_file_path
+            if self.parent_client:
+                self.parent_client.port_lock_files[self.port] = lock_file_path
+            logger.debug(f"[{self.device_id}] ✓ Port lock acquired: {lock_file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"[{self.device_id}] Failed to create port lock: {e}")
+            return False
+    
+    def release_port_lock(self):
+        """Release port lock"""
+        if self.port_lock_file and os.path.exists(self.port_lock_file):
+            try:
+                os.remove(self.port_lock_file)
+                logger.debug(f"[{self.device_id}] ✓ Port lock released")
+            except Exception as e:
+                logger.warning(f"[{self.device_id}] Failed to remove port lock: {e}")
         
     def connect(self, retries=3):
-        """Connect to AS608 fingerprint sensor"""
+        """Connect to AS608 fingerprint sensor with port locking"""
+        # Acquire port lock first
+        if not self.acquire_port_lock():
+            logger.error(f"[{self.device_id}] ❌ Cannot acquire lock on port {self.port}")
+            return False
+        
         for attempt in range(retries):
             try:
                 logger.info(f"[{self.device_id}] Connecting to sensor on {self.port} (attempt {attempt + 1})")
                 
-                # Check if port is already in use
+                # Additional check if port is already in use
                 try:
                     import subprocess
                     result = subprocess.run(['lsof', self.port], capture_output=True, text=True)
@@ -81,6 +130,24 @@ class SensorConnection:
                 else:
                     raise Exception("Failed to read templates from sensor")
                     
+            except serial.SerialException as e:
+                logger.error(f"[{self.device_id}] Connection attempt {attempt + 1} failed: {e}")
+                if "Permission denied" in str(e) or "could not open port" in str(e).lower():
+                    logger.error(f"[{self.device_id}] ❌ Port is already in use by another process")
+                    self.release_port_lock()
+                    return False
+                if self.uart:
+                    try:
+                        self.uart.close()
+                    except:
+                        pass
+                    self.uart = None
+                if attempt < retries - 1:
+                    time.sleep(2)
+                else:
+                    self.connected = False
+                    self.release_port_lock()
+                    raise
             except Exception as e:
                 logger.error(f"[{self.device_id}] Connection attempt {attempt + 1} failed: {e}")
                 if self.uart:
@@ -93,12 +160,14 @@ class SensorConnection:
                     time.sleep(2)
                 else:
                     self.connected = False
+                    self.release_port_lock()
                     raise
         return False
     
     def disconnect(self):
         """Disconnect from sensor"""
         self.connected = False
+        self.release_port_lock()  # Release port lock
         if self.uart:
             try:
                 self.uart.close()
@@ -130,14 +199,23 @@ class MultiSensorFingerprintClient:
         self.running = True
         self.enrolling = False  # Flag to pause scanning during enrollment
         self.command_lock = threading.Lock()
-        self.db_file = "fingerprints.db"
+        self.db_file = "fingerprints_multi.db"  # Separate DB file to avoid conflicts
         self.scan_threads = []  # Threads for each sensor scanning
+        self.port_lock_files = {}  # Track port locks
+        self.gpio_lock_file = None  # File lock for GPIO
+        self.pid_file = None  # PID file to prevent multiple instances
+        
+        # Check for existing instances
+        self.check_existing_instance()
         
         self.init_database()
         
         # Relay control
-        self.relay_pin = 18  # GPIO pin for relay
-        self.setup_gpio()
+        # DISABLED: Relay control di-nonaktifkan karena menggunakan relay_controller_advanced.py
+        # Jika ingin menggunakan relay built-in, uncomment baris di bawah dan comment relay_controller_advanced.py
+        # self.relay_pin = 18  # GPIO pin for relay
+        # self.setup_gpio()
+        self.relay_pin = None  # Disabled - using relay_controller_advanced.py instead
         
         # Initialize sensors from config
         self.init_sensors()
@@ -148,12 +226,20 @@ class MultiSensorFingerprintClient:
         self.IMPORT_TOPIC = "WHAC/Store001/import"  # for importing users
         self.EXPORT_TOPIC = "WHAC/Store001/export"  # for exporting users
         self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
+        self.AUDIO_TOPIC = "WHAC/Store001/audio"  # for audio commands (self-inspection)
         self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
-        self.AUDIO_TOPIC = "WHAC/Store001/audio"  # for audio feedback commands
-        self.SYSTEM_TOPIC = "WHAC/Store001/system"  # for system control commands
         
-        # Audio feedback
-        self.audio = audio_feedback if AUDIO_ENABLED else None
+        # Initialize audio controller
+        self.audio_controller = None
+        if AUDIO_AVAILABLE:
+            try:
+                audio_dir = os.path.join(os.path.dirname(__file__), "audio")
+                os.makedirs(audio_dir, exist_ok=True)
+                self.audio_controller = get_audio_controller(audio_dir=audio_dir, use_tts=True)
+                logger.info("✅ Audio controller initialized")
+            except Exception as e:
+                logger.warning(f"⚠️  Failed to initialize audio controller: {e}")
+                self.audio_controller = None
     
     def init_sensors(self):
         """Initialize sensor connections from config"""
@@ -170,7 +256,7 @@ class MultiSensorFingerprintClient:
         for idx, port in enumerate(ports):
             # Generate device_id: AS608_001, AS608_002, etc.
             device_id = f"AS608_{idx + 1:03d}"
-            sensor = SensorConnection(port.strip(), device_id, idx)
+            sensor = SensorConnection(port.strip(), device_id, idx, parent_client=self)
             
             # Verify port exists
             if not os.path.exists(sensor.port):
@@ -251,10 +337,59 @@ class MultiSensorFingerprintClient:
         logger.warning(f"[{device_id}] ⚠️  Auto-detection failed")
         return None
     
+    def check_existing_instance(self):
+        """Check if another instance of this program is already running"""
+        try:
+            pid_file_path = "/tmp/fingerprint_multi_client.pid"
+            if os.path.exists(pid_file_path):
+                try:
+                    with open(pid_file_path, 'r') as f:
+                        old_pid = int(f.read().strip())
+                    if os.name == 'posix':
+                        try:
+                            os.kill(old_pid, 0)
+                            logger.error(f"❌ Another instance is already running (PID: {old_pid})")
+                            logger.error("💡 Stop the existing instance first or remove /tmp/fingerprint_multi_client.pid")
+                            raise SystemExit(1)
+                        except OSError:
+                            os.remove(pid_file_path)
+                except (ValueError, IOError):
+                    os.remove(pid_file_path)
+            
+            with open(pid_file_path, 'w') as f:
+                f.write(str(os.getpid()))
+            self.pid_file = pid_file_path
+            logger.debug(f"✓ PID file created: {pid_file_path}")
+        except Exception as e:
+            logger.warning(f"Could not create PID file: {e}")
+    
     def setup_gpio(self):
-        """Setup GPIO for relay control"""
+        """Setup GPIO for relay control with conflict detection"""
         try:
             import RPi.GPIO as GPIO
+            
+            # Check if GPIO is already in use
+            gpio_lock_path = f"/tmp/gpio_pin_{self.relay_pin}.lock"
+            if os.path.exists(gpio_lock_path):
+                try:
+                    with open(gpio_lock_path, 'r') as f:
+                        old_pid = int(f.read().strip())
+                    if os.name == 'posix':
+                        try:
+                            os.kill(old_pid, 0)
+                            logger.error(f"❌ GPIO pin {self.relay_pin} is already in use by process {old_pid}")
+                            logger.error("💡 Stop the other process first or remove the lock file")
+                            raise SystemExit(1)
+                        except OSError:
+                            os.remove(gpio_lock_path)
+                except (ValueError, IOError):
+                    os.remove(gpio_lock_path)
+            
+            # Create GPIO lock file
+            with open(gpio_lock_path, 'w') as f:
+                f.write(str(os.getpid()))
+            self.gpio_lock_file = gpio_lock_path
+            
             GPIO.setwarnings(False)
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.relay_pin, GPIO.OUT)
@@ -263,6 +398,8 @@ class MultiSensorFingerprintClient:
         except ImportError:
             logger.warning("RPi.GPIO not available - relay control disabled")
             self.relay_pin = None
+        except SystemExit:
+            raise
         except Exception as e:
             logger.error(f"GPIO setup error: {e}")
             self.relay_pin = None
@@ -272,9 +409,12 @@ class MultiSensorFingerprintClient:
         
         FIXED: Previously used time.sleep() which blocked the thread.
         Now uses background thread to handle relay timer without blocking.
+        
+        NOTE: Relay control is disabled when using relay_controller_advanced.py
         """
         if not self.relay_pin:
-            logger.warning("Relay control not available")
+            # Relay control disabled - using relay_controller_advanced.py instead
+            logger.debug("Relay control disabled - using relay_controller_advanced.py")
             return
         
         try:
@@ -325,9 +465,10 @@ class MultiSensorFingerprintClient:
                 pass
     
     def init_database(self):
-        """Initialize SQLite database for fingerprint management"""
+        """Initialize SQLite database for fingerprint management with timeout"""
         try:
-            conn = sqlite3.connect(self.db_file)
+            # Use timeout to handle database locking better
+            conn = sqlite3.connect(self.db_file, timeout=10.0)
             cursor = conn.cursor()
             
             # Create users table if it doesn't exist
@@ -367,10 +508,12 @@ class MultiSensorFingerprintClient:
         return True
     
     def connect_mqtt(self):
-        """Connect to MQTT broker"""
+        """Connect to MQTT broker with unique client ID"""
         try:
             logger.info(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}")
-            self.mqtt_client = mqtt.Client(client_id="whac_multi_fingerprint_client")
+            # Create unique client ID to prevent conflicts
+            unique_id = f"whac_multi_fingerprint_client_{os.getpid()}_{int(time.time())}"
+            self.mqtt_client = mqtt.Client(client_id=unique_id)
             
             # Set up callbacks
             self.mqtt_client.on_connect = self.on_mqtt_connect
@@ -394,7 +537,8 @@ class MultiSensorFingerprintClient:
                 self.mqtt_client.subscribe(self.IMPORT_TOPIC, qos=MQTT_QOS)
                 self.mqtt_client.subscribe(self.EXPORT_TOPIC, qos=MQTT_QOS)
                 self.mqtt_client.subscribe(self.ACTION_TOPIC, qos=MQTT_QOS)
-                logger.info(f"✓ Subscribed to command topics")
+                self.mqtt_client.subscribe(self.AUDIO_TOPIC, qos=MQTT_QOS)
+                logger.info(f"✓ Subscribed to command topics (including audio)")
                 return True
             else:
                 logger.error("✗ Failed to connect to MQTT broker within timeout")
@@ -409,12 +553,6 @@ class MultiSensorFingerprintClient:
         if rc == 0:
             self.connected = True
             logger.info("MQTT client connected")
-            
-            # Subscribe to audio and system topics
-            client.subscribe(self.AUDIO_TOPIC, qos=1)
-            client.subscribe(self.SYSTEM_TOPIC, qos=1)
-            logger.info(f"✅ Subscribed to {self.AUDIO_TOPIC}")
-            logger.info(f"✅ Subscribed to {self.SYSTEM_TOPIC}")
         else:
             logger.error(f"MQTT connection failed with code {rc}")
             self.connected = False
@@ -452,8 +590,6 @@ class MultiSensorFingerprintClient:
                     self.handle_relay_action(payload)
                 elif topic == self.AUDIO_TOPIC:
                     self.handle_audio_command(payload)
-                elif topic == self.SYSTEM_TOPIC:
-                    self.handle_system_command(payload)
             except Exception as e:
                 logger.error(f"Error handling command: {e}")
     
@@ -538,7 +674,7 @@ class MultiSensorFingerprintClient:
                             # Enroll fingerprint
                             if self.enroll_fingerprint_on_sensor(sensor, fingerprint_id):
                                 # Save to database
-                                conn = sqlite3.connect(self.db_file)
+                                conn = sqlite3.connect(self.db_file, timeout=10.0)
                                 cursor = conn.cursor()
                                 cursor.execute('''
                                     INSERT OR REPLACE INTO users (fingerprint_id, user_name, device_id)
@@ -649,6 +785,116 @@ class MultiSensorFingerprintClient:
             self.send_relay_status(command, user_id, action, "MQTT")
         except Exception as e:
             logger.error(f"Error handling relay command: {e}")
+    
+    def handle_audio_command(self, payload):
+        """Handle audio command (self-inspection) - NON-BLOCKING"""
+        try:
+            command_type = payload.get('command', 'self_inspection')
+            source = payload.get('source', 'web_ui')
+            requested_by = payload.get('requested_by', 'unknown')
+            
+            logger.info(f"🔊 Audio command received: {command_type} from {source} (requested by: {requested_by})")
+            
+            if not self.audio_controller:
+                logger.warning("⚠️  Audio controller not available")
+                self.send_audio_response(command_type, 'error', {'message': 'Audio controller not available'})
+                return
+            
+            # Check if audio is already playing
+            if self.audio_controller.is_busy():
+                logger.warning("⚠️  Audio is already playing, queuing request")
+                # Still queue it, but send warning response
+                self.send_audio_response(command_type, 'queued', {'message': 'Audio queued (already playing)'})
+            
+            # Handle different audio commands
+            if command_type == 'self_inspection':
+                success = self.audio_controller.play_self_inspection(
+                    callback=lambda result: self._on_audio_complete(command_type, result)
+                )
+                if success:
+                    logger.info("✅ Self-inspection audio queued successfully")
+                    self.send_audio_response(command_type, 'queued', {'message': 'Self-inspection audio started'})
+                else:
+                    logger.error("❌ Failed to queue self-inspection audio")
+                    self.send_audio_response(command_type, 'error', {'message': 'Failed to queue audio'})
+            elif command_type == 'play_file':
+                filename = payload.get('filename', '')
+                if filename:
+                    success = self.audio_controller.play_file(
+                        filename,
+                        callback=lambda result: self._on_audio_complete(command_type, result)
+                    )
+                    if success:
+                        self.send_audio_response(command_type, 'queued', {'message': f'Audio file {filename} queued'})
+                    else:
+                        self.send_audio_response(command_type, 'error', {'message': 'Failed to queue audio file'})
+                else:
+                    self.send_audio_response(command_type, 'error', {'message': 'Filename not provided'})
+            elif command_type == 'play_tts':
+                text = payload.get('text', '')
+                if text:
+                    success = self.audio_controller.play_tts(
+                        text,
+                        callback=lambda result: self._on_audio_complete(command_type, result)
+                    )
+                    if success:
+                        self.send_audio_response(command_type, 'queued', {'message': 'TTS queued'})
+                    else:
+                        self.send_audio_response(command_type, 'error', {'message': 'Failed to queue TTS'})
+                else:
+                    self.send_audio_response(command_type, 'error', {'message': 'Text not provided'})
+            elif command_type == 'stop':
+                self.audio_controller.stop()
+                self.send_audio_response(command_type, 'success', {'message': 'Audio stopped'})
+            else:
+                logger.warning(f"⚠️  Unknown audio command: {command_type}")
+                self.send_audio_response(command_type, 'error', {'message': f'Unknown command: {command_type}'})
+                
+        except Exception as e:
+            logger.error(f"❌ Error handling audio command: {e}")
+            self.send_audio_response(payload.get('command', 'unknown'), 'error', {'message': str(e)})
+    
+    def _on_audio_complete(self, command_type, success):
+        """Callback when audio playback completes"""
+        try:
+            if success:
+                logger.info(f"✅ Audio playback completed: {command_type}")
+                self.send_audio_response(command_type, 'completed', {'message': 'Audio playback completed'})
+            else:
+                logger.warning(f"⚠️  Audio playback failed: {command_type}")
+                self.send_audio_response(command_type, 'error', {'message': 'Audio playback failed'})
+        except Exception as e:
+            logger.error(f"Error in audio completion callback: {e}")
+    
+    def send_audio_response(self, command_type, status, data):
+        """Send audio command response back to MQTT"""
+        try:
+            if not self.connected:
+                return False
+            
+            response = {
+                "store_id": STORE_ID,
+                "timestamp": datetime.now().isoformat(),
+                "command": command_type,
+                "status": status,
+                "data": data,
+                "device_id": "MULTI_SENSOR"
+            }
+            
+            response_topic = f"WHAC/Store001/audio_response"
+            payload = json.dumps(response)
+            result = self.mqtt_client.publish(response_topic, payload, qos=MQTT_QOS)
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"✓ Audio response sent: {command_type} - {status}")
+                return True
+            else:
+                logger.error(f"✗ Failed to send audio response (rc: {result.rc})")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending audio response: {e}")
+            return False
     
     def send_relay_status(self, command, user_id, action, source):
         """Send relay status update"""
@@ -869,7 +1115,7 @@ class MultiSensorFingerprintClient:
     def get_user_info(self, fingerprint_id):
         """Get user information from local database"""
         try:
-            conn = sqlite3.connect(self.db_file)
+            conn = sqlite3.connect(self.db_file, timeout=10.0)
             cursor = conn.cursor()
             cursor.execute("SELECT user_name, device_id FROM users WHERE fingerprint_id = ?", (fingerprint_id,))
             result = cursor.fetchone()
@@ -887,79 +1133,6 @@ class MultiSensorFingerprintClient:
             logger.error(f"Error getting user info: {e}")
             return None
     
-
-    def handle_audio_command(self, payload):
-        """Handle audio playback command"""
-        try:
-            audio_type = payload.get('audio_type', 'beep')
-            message = payload.get('message', '')
-            logger.info(f"🔊 Audio command received: {audio_type}")
-            if self.audio:
-                self.audio.play_audio_type(audio_type, message)
-                logger.info(f"✅ Audio played: {audio_type}")
-            else:
-                logger.warning("⚠️  Audio not available")
-        except Exception as e:
-            logger.error(f"Error handling audio command: {e}")
-    
-    def handle_system_command(self, payload):
-        """Handle system check command"""
-        try:
-            command = payload.get('command')
-            logger.info(f"🔍 System command received: {command}")
-            if command == 'system_check':
-                self.run_system_check()
-            else:
-                logger.warning(f"Unknown system command: {command}")
-        except Exception as e:
-            logger.error(f"Error handling system command: {e}")
-    
-    def run_system_check(self):
-        """Run system self-check"""
-        try:
-            logger.info("=" * 80)
-            logger.info("🔍 RUNNING SYSTEM SELF-CHECK")
-            logger.info("=" * 80)
-            if self.audio:
-                self.audio.play_audio_type('system_check')
-            logger.info("📡 Checking sensors...")
-            connected_sensors = len([s for s in self.sensors if s.connected])
-            total_sensors = len(self.sensors)
-            logger.info(f"  ✓ Sensors connected: {connected_sensors}/{total_sensors}")
-            logger.info("📡 Checking MQTT...")
-            if self.connected:
-                logger.info("  ✓ MQTT connected")
-            else:
-                logger.warning("  ⚠️  MQTT not connected")
-            logger.info("🔌 Checking relay...")
-            try:
-                import RPi.GPIO as GPIO
-                logger.info(f"  ✓ GPIO available, relay pin: {self.relay_pin}")
-            except:
-                logger.warning("  ⚠️  GPIO not available")
-            logger.info("💾 Checking database...")
-            try:
-                conn = sqlite3.connect(self.db_file)
-                cursor = conn.cursor()
-                cursor.execute("SELECT COUNT(*) FROM users")
-                user_count = cursor.fetchone()[0]
-                conn.close()
-                logger.info(f"  ✓ Database OK, {user_count} users registered")
-            except Exception as e:
-                logger.error(f"  ✗ Database error: {e}")
-
-            logger.info("=" * 80)
-            logger.info("✅ SYSTEM CHECK COMPLETE")
-            logger.info("=" * 80)
-
-            if self.audio:
-                self.audio.play_audio_type('success')
-
-        except Exception as e:
-            logger.error(f"Error running system check: {e}")
-            if self.audio:
-                self.audio.play_audio_type('error')
-
     def scan_fingerprint_standby(self, sensor):
         """Standby fingerprint scanning for a specific sensor"""
         try:
@@ -1086,6 +1259,31 @@ class MultiSensorFingerprintClient:
         # Wait for scan threads to finish
         for thread in self.scan_threads:
             thread.join(timeout=2)
+        
+        # Release all port locks
+        for port, lock_file in self.port_lock_files.items():
+            if os.path.exists(lock_file):
+                try:
+                    os.remove(lock_file)
+                    logger.debug(f"✓ Port lock released: {lock_file}")
+                except Exception as e:
+                    logger.warning(f"Failed to remove port lock {lock_file}: {e}")
+        
+        # Release GPIO lock
+        if self.gpio_lock_file and os.path.exists(self.gpio_lock_file):
+            try:
+                os.remove(self.gpio_lock_file)
+                logger.debug(f"✓ GPIO lock released: {self.gpio_lock_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove GPIO lock: {e}")
+        
+        # Remove PID file
+        if self.pid_file and os.path.exists(self.pid_file):
+            try:
+                os.remove(self.pid_file)
+                logger.debug(f"✓ PID file removed: {self.pid_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove PID file: {e}")
         
         if self.mqtt_client:
             self.mqtt_client.loop_stop()

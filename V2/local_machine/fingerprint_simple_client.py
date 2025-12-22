@@ -41,7 +41,14 @@ class SimpleFingerprintClient:
         self.running = True
         self.enrolling = False  # Flag to pause scanning during enrollment
         self.command_lock = threading.Lock()
-        self.db_file = "fingerprints.db"
+        self.db_file = "fingerprints_simple.db"  # Separate DB file to avoid conflicts
+        self.port_lock_file = None  # File lock for serial port
+        self.gpio_lock_file = None  # File lock for GPIO
+        self.pid_file = None  # PID file to prevent multiple instances
+        
+        # Check for existing instances
+        self.check_existing_instance()
+        
         self.init_database()
         
         # Relay control
@@ -66,10 +73,65 @@ class SimpleFingerprintClient:
         self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
         self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
     
+    def check_existing_instance(self):
+        """Check if another instance of this program is already running"""
+        try:
+            pid_file_path = "/tmp/fingerprint_simple_client.pid"
+            if os.path.exists(pid_file_path):
+                # Check if the process is still running
+                try:
+                    with open(pid_file_path, 'r') as f:
+                        old_pid = int(f.read().strip())
+                    # Check if process exists (Unix only)
+                    if os.name == 'posix':
+                        try:
+                            os.kill(old_pid, 0)  # Signal 0 doesn't kill, just checks
+                            logger.error(f"❌ Another instance is already running (PID: {old_pid})")
+                            logger.error("💡 Stop the existing instance first or remove /tmp/fingerprint_simple_client.pid")
+                            raise SystemExit(1)
+                        except OSError:
+                            # Process doesn't exist, remove stale PID file
+                            os.remove(pid_file_path)
+                except (ValueError, IOError):
+                    # Invalid PID file, remove it
+                    os.remove(pid_file_path)
+            
+            # Create PID file
+            with open(pid_file_path, 'w') as f:
+                f.write(str(os.getpid()))
+            self.pid_file = pid_file_path
+            logger.debug(f"✓ PID file created: {pid_file_path}")
+        except Exception as e:
+            logger.warning(f"Could not create PID file: {e}")
+    
     def setup_gpio(self):
-        """Setup GPIO for relay control"""
+        """Setup GPIO for relay control with conflict detection"""
         try:
             import RPi.GPIO as GPIO
+            
+            # Check if GPIO is already in use by another process
+            gpio_lock_path = f"/tmp/gpio_pin_{self.relay_pin}.lock"
+            if os.path.exists(gpio_lock_path):
+                try:
+                    with open(gpio_lock_path, 'r') as f:
+                        old_pid = int(f.read().strip())
+                    if os.name == 'posix':
+                        try:
+                            os.kill(old_pid, 0)
+                            logger.error(f"❌ GPIO pin {self.relay_pin} is already in use by process {old_pid}")
+                            logger.error("💡 Stop the other process first or remove the lock file")
+                            raise SystemExit(1)
+                        except OSError:
+                            # Process doesn't exist, remove stale lock
+                            os.remove(gpio_lock_path)
+                except (ValueError, IOError):
+                    os.remove(gpio_lock_path)
+            
+            # Create GPIO lock file
+            with open(gpio_lock_path, 'w') as f:
+                f.write(str(os.getpid()))
+            self.gpio_lock_file = gpio_lock_path
+            
             GPIO.setwarnings(False)  # Disable GPIO warnings
             GPIO.setmode(GPIO.BCM)
             GPIO.setup(self.relay_pin, GPIO.OUT)
@@ -78,6 +140,8 @@ class SimpleFingerprintClient:
         except ImportError:
             logger.warning("RPi.GPIO not available - relay control disabled")
             self.relay_pin = None
+        except SystemExit:
+            raise
         except Exception as e:
             logger.error(f"GPIO setup error: {e}")
             self.relay_pin = None
@@ -276,13 +340,61 @@ class SimpleFingerprintClient:
             except ImportError:
                 logger.info("  serial.tools.list_ports not available")
     
+    def acquire_port_lock(self, port):
+        """Acquire exclusive lock on serial port to prevent conflicts"""
+        if os.name != 'posix':
+            return True  # File locking not available on Windows
+        
+        lock_file_path = f"/tmp/serial_port_{os.path.basename(port)}.lock"
+        
+        # Check if lock exists and process is still running
+        if os.path.exists(lock_file_path):
+            try:
+                with open(lock_file_path, 'r') as f:
+                    old_pid = int(f.read().strip())
+                try:
+                    os.kill(old_pid, 0)  # Check if process exists
+                    logger.error(f"❌ Port {port} is locked by process {old_pid}")
+                    logger.error("💡 Stop the other process first or remove the lock file")
+                    return False
+                except OSError:
+                    # Process doesn't exist, remove stale lock
+                    os.remove(lock_file_path)
+            except (ValueError, IOError):
+                os.remove(lock_file_path)
+        
+        # Create lock file
+        try:
+            with open(lock_file_path, 'w') as f:
+                f.write(str(os.getpid()))
+            self.port_lock_file = lock_file_path
+            logger.debug(f"✓ Port lock acquired: {lock_file_path}")
+            return True
+        except Exception as e:
+            logger.error(f"Failed to create port lock: {e}")
+            return False
+    
+    def release_port_lock(self):
+        """Release port lock"""
+        if self.port_lock_file and os.path.exists(self.port_lock_file):
+            try:
+                os.remove(self.port_lock_file)
+                logger.debug(f"✓ Port lock released: {self.port_lock_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove port lock: {e}")
+    
     def connect_sensor(self, retries=3):
-        """Connect to AS608 fingerprint sensor"""
+        """Connect to AS608 fingerprint sensor with port locking"""
+        # Acquire port lock first
+        if not self.acquire_port_lock(self.detected_port):
+            logger.error(f"❌ Cannot acquire lock on port {self.detected_port}")
+            return False
+        
         for attempt in range(retries):
             try:
                 logger.info(f"Connecting to fingerprint sensor on {self.detected_port} (attempt {attempt + 1})")
                 
-                # Check if port is already in use
+                # Additional check if port is already in use (using lsof)
                 try:
                     import subprocess
                     result = subprocess.run(['lsof', self.detected_port], capture_output=True, text=True)
@@ -299,21 +411,43 @@ class SimpleFingerprintClient:
                 logger.info("✓ Sensor connected successfully!")
                 return True
                     
-            except Exception as e:
+            except serial.SerialException as e:
                 logger.error(f"Connection attempt {attempt + 1} failed: {e}")
+                if "Permission denied" in str(e) or "could not open port" in str(e).lower():
+                    logger.error("❌ Port is already in use by another process")
+                    self.release_port_lock()
+                    return False
                 if self.uart:
-                    self.uart.close()
+                    try:
+                        self.uart.close()
+                    except:
+                        pass
                 if attempt < retries - 1:
                     time.sleep(1)
                 else:
+                    self.release_port_lock()
+                    raise
+            except Exception as e:
+                logger.error(f"Connection attempt {attempt + 1} failed: {e}")
+                if self.uart:
+                    try:
+                        self.uart.close()
+                    except:
+                        pass
+                if attempt < retries - 1:
+                    time.sleep(1)
+                else:
+                    self.release_port_lock()
                     raise
         return False
     
     def connect_mqtt(self):
-        """Connect to MQTT broker"""
+        """Connect to MQTT broker with unique client ID"""
         try:
             logger.info(f"Connecting to MQTT broker at {MQTT_BROKER}:{MQTT_PORT}")
-            self.mqtt_client = mqtt.Client(client_id="whac_fingerprint_client")
+            # Create unique client ID to prevent conflicts
+            unique_id = f"whac_fingerprint_client_{os.getpid()}_{int(time.time())}"
+            self.mqtt_client = mqtt.Client(client_id=unique_id)
             
             # Set up callbacks
             self.mqtt_client.on_connect = self.on_mqtt_connect
@@ -412,9 +546,10 @@ class SimpleFingerprintClient:
             logger.error(f"Error in command handler: {e}", exc_info=True)
     
     def init_database(self):
-        """Initialize simple SQLite database"""
+        """Initialize simple SQLite database with timeout for concurrent access"""
         try:
-            conn = sqlite3.connect(self.db_file)
+            # Use timeout to handle database locking better
+            conn = sqlite3.connect(self.db_file, timeout=10.0)
             cursor = conn.cursor()
             
             # Simple users table
@@ -535,7 +670,7 @@ class SimpleFingerprintClient:
     def get_user_info(self, fingerprint_id):
         """Get user information from local database"""
         try:
-            conn = sqlite3.connect(self.db_file)
+            conn = sqlite3.connect(self.db_file, timeout=10.0)
             cursor = conn.cursor()
             cursor.execute("SELECT user_name FROM users WHERE fingerprint_id = ?", (fingerprint_id,))
             result = cursor.fetchone()
@@ -589,7 +724,7 @@ class SimpleFingerprintClient:
                     # Enroll fingerprint
                     if self.enroll_fingerprint(fingerprint_id):
                         # Save to database
-                        conn = sqlite3.connect(self.db_file)
+                        conn = sqlite3.connect(self.db_file, timeout=10.0)
                         cursor = conn.cursor()
                         cursor.execute('''
                             INSERT OR REPLACE INTO users (fingerprint_id, user_name)
@@ -657,7 +792,7 @@ class SimpleFingerprintClient:
                                 # Store template in sensor
                                 if self.finger.store_model(fingerprint_id) == adafruit_fingerprint.OK:
                                     # Save to database
-                                    conn = sqlite3.connect(self.db_file)
+                                    conn = sqlite3.connect(self.db_file, timeout=10.0)
                                     cursor = conn.cursor()
                                     cursor.execute('''
                                         INSERT OR REPLACE INTO users (fingerprint_id, user_name)
@@ -702,7 +837,7 @@ class SimpleFingerprintClient:
                 logger.info("Processing export users command...")
                 
                 # Get all users from database
-                conn = sqlite3.connect(self.db_file)
+                conn = sqlite3.connect(self.db_file, timeout=10.0)
                 cursor = conn.cursor()
                 cursor.execute('SELECT fingerprint_id, user_name, created_at FROM users ORDER BY fingerprint_id')
                 users = cursor.fetchall()
@@ -1014,6 +1149,25 @@ class SimpleFingerprintClient:
         """Clean up resources"""
         logger.info("Cleaning up resources...")
         self.running = False
+        
+        # Release port lock
+        self.release_port_lock()
+        
+        # Release GPIO lock
+        if self.gpio_lock_file and os.path.exists(self.gpio_lock_file):
+            try:
+                os.remove(self.gpio_lock_file)
+                logger.debug(f"✓ GPIO lock released: {self.gpio_lock_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove GPIO lock: {e}")
+        
+        # Remove PID file
+        if self.pid_file and os.path.exists(self.pid_file):
+            try:
+                os.remove(self.pid_file)
+                logger.debug(f"✓ PID file removed: {self.pid_file}")
+            except Exception as e:
+                logger.warning(f"Failed to remove PID file: {e}")
         
         if self.mqtt_client:
             self.mqtt_client.loop_stop()

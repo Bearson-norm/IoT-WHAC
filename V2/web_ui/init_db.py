@@ -57,7 +57,9 @@ def execute_setup_script():
         # Connect to database
         print("🔌 Connecting to database...")
         conn = psycopg2.connect(**DB_CONFIG)
-        conn.autocommit = False
+        # Use autocommit mode so each statement is its own transaction
+        # This prevents one failed statement from aborting the entire transaction
+        conn.autocommit = True
         
         cursor = conn.cursor()
         
@@ -99,38 +101,32 @@ def execute_setup_script():
         skipped = 0
         errors = 0
         
-        try:
-            for i, statement in enumerate(statements, 1):
-                if not statement or statement == ';':
-                    continue
-                
-                try:
-                    cursor.execute(statement)
-                    executed += 1
-                    if i % 5 == 0 or i == len(statements):  # Print every 5 statements
-                        print(f"   ✓ Executed {executed}/{len(statements)} statements...")
-                except Exception as e:
-                    error_msg = str(e).lower()
-                    # Some errors are expected (like "already exists"), so we'll continue
-                    if any(keyword in error_msg for keyword in ['already exists', 'duplicate', 'conflict', 'does not exist']):
-                        skipped += 1
-                        # Don't print every skip to reduce noise
-                    else:
-                        errors += 1
-                        if errors <= 3:  # Only print first 3 real errors
-                            print(f"   ⚠️  Statement {i} error: {str(e)[:150]}")
+        for i, statement in enumerate(statements, 1):
+            if not statement or statement == ';':
+                continue
             
-            conn.commit()
-            print(f"✅ Database setup completed!")
-            print(f"   ✓ Executed: {executed}")
-            if skipped > 0:
-                print(f"   ⚠️  Skipped (already exist): {skipped}")
-            if errors > 0:
-                print(f"   ❌ Errors: {errors}")
-        except Exception as e:
-            print(f"❌ Fatal error executing statements: {e}")
-            conn.rollback()
-            raise
+            try:
+                cursor.execute(statement)
+                executed += 1
+                if i % 5 == 0 or i == len(statements):  # Print every 5 statements
+                    print(f"   ✓ Executed {executed}/{len(statements)} statements...")
+            except Exception as e:
+                error_msg = str(e).lower()
+                # Some errors are expected (like "already exists"), so we'll continue
+                if any(keyword in error_msg for keyword in ['already exists', 'duplicate', 'conflict', 'does not exist']):
+                    skipped += 1
+                    # Don't print every skip to reduce noise
+                else:
+                    errors += 1
+                    if errors <= 5:  # Print first 5 real errors for debugging
+                        print(f"   ⚠️  Statement {i} error: {str(e)[:150]}")
+        
+        print(f"✅ Database setup completed!")
+        print(f"   ✓ Executed: {executed}")
+        if skipped > 0:
+            print(f"   ⚠️  Skipped (already exist): {skipped}")
+        if errors > 0:
+            print(f"   ❌ Errors: {errors}")
         
         # Close cursor from SQL execution
         cursor.close()

@@ -37,6 +37,14 @@
         .chart-container {
             position: relative;
             height: 300px;
+            width: 100%;
+        }
+        
+        .chart-container canvas {
+            display: block !important;
+            box-sizing: border-box;
+            height: 300px !important;
+            width: 100% !important;
         }
     </style>
 </head>
@@ -80,6 +88,9 @@
                     <button class="btn btn-sm btn-success" onclick="simulateScan()" title="Simulate Real Scan">
                         <i class="fas fa-fingerprint me-1"></i>Simulate Scan
                     </button>
+                    <button class="btn btn-sm btn-primary" onclick="triggerSelfInspection()" title="Self-Inspection Audio">
+                        <i class="fas fa-volume-up me-1"></i>Self-Inspection
+                    </button>
                 </div>
             </div>
         </div>
@@ -88,7 +99,7 @@
     <div class="container mt-4">
         <!-- Dashboard Stats -->
         <div class="row mb-4" id="dashboard-stats">
-            <div class="col-md-3 mb-3">
+            <div class="col-md-2 mb-3">
                 <div class="card card-stat">
                     <div class="card-body text-center">
                         <i class="fas fa-users fa-2x mb-2"></i>
@@ -97,7 +108,7 @@
                     </div>
                 </div>
             </div>
-            <div class="col-md-3 mb-3">
+            <div class="col-md-2 mb-3">
                 <div class="card card-stat success">
                     <div class="card-body text-center">
                         <i class="fas fa-fingerprint fa-2x mb-2"></i>
@@ -106,7 +117,7 @@
                     </div>
                 </div>
             </div>
-            <div class="col-md-3 mb-3">
+            <div class="col-md-2 mb-3">
                 <div class="card card-stat success">
                     <div class="card-body text-center">
                         <i class="fas fa-check-circle fa-2x mb-2"></i>
@@ -115,7 +126,7 @@
                     </div>
                 </div>
             </div>
-            <div class="col-md-3 mb-3">
+            <div class="col-md-2 mb-3">
                 <div class="card card-stat danger">
                     <div class="card-body text-center">
                         <i class="fas fa-times-circle fa-2x mb-2"></i>
@@ -124,8 +135,18 @@
                     </div>
                 </div>
             </div>
+            <div class="col-md-2 mb-3">
+                <div class="card card-stat" id="door-status-card">
+                    <div class="card-body text-center">
+                        <i class="fas fa-door-open fa-2x mb-2" id="door-icon"></i>
+                        <h4 id="door-status-text">-</h4>
+                        <p class="mb-0">Status Pintu</p>
+                        <small id="door-status-time" class="text-white-50">-</small>
+                    </div>
+                </div>
+            </div>
         </div>
-        {% include 'control_panel.html' %}
+
         <!-- Charts -->
         <div class="row mb-4">
             <div class="col-md-6">
@@ -422,13 +443,18 @@
                                     <small class="text-muted">This will be the fingerprint slot number</small>
                                 </div>
                                 <div class="mb-3">
-                                    <label for="newUsername" class="form-label">Username <span class="text-danger">*</span></label>
+                                    <label for="newUsername" class="form-label">Nama <span class="text-danger">*</span></label>
                                     <input type="text" class="form-control" id="newUsername" required 
-                                           placeholder="Enter user's name">
+                                           placeholder="Masukkan nama user">
+                                </div>
+                                <div class="mb-3">
+                                    <label for="newUserPosisi" class="form-label">Posisi</label>
+                                    <input type="text" class="form-control" id="newUserPosisi" 
+                                           placeholder="Masukkan posisi/jabatan (opsional)">
                                 </div>
                                 <div class="alert alert-info">
                                     <i class="fas fa-info-circle me-2"></i>
-                                    <strong>Next Steps:</strong> The user will be asked to scan their finger twice to enroll.
+                                    <strong>Info:</strong> User akan didaftarkan ke sistem. Pastikan fingerprint sudah terdaftar di sensor.
                                 </div>
                             </form>
                         </div>
@@ -448,10 +474,10 @@
                 <!-- Footer for Unknown User -->
                 <div class="modal-footer justify-content-center" id="unknownUserFooter" style="display: none;">
                     <button type="button" class="btn btn-primary btn-lg me-2" onclick="enrollNewUser()">
-                        <i class="fas fa-user-plus me-2"></i>Enroll User
+                        <i class="fas fa-user-plus me-2"></i>Daftar
                     </button>
                     <button type="button" class="btn btn-secondary btn-lg" onclick="dismissUnknownUser()">
-                        <i class="fas fa-times me-2"></i>Dismiss
+                        <i class="fas fa-times me-2"></i>Tidak
                     </button>
                 </div>
             </div>
@@ -550,6 +576,11 @@
                 } else {
                     showNotification(data.message, 'error');
                 }
+            });
+            
+            socket.on('door_status_update', function(data) {
+                console.log('🚪 Received door status update:', data);
+                updateDoorStatus(data);
             });
             
             socket.on('enrollment_notification', function(data) {
@@ -653,17 +684,17 @@
                 }
             }
             
-            // Check if this is a known or unknown user
-            const isKnownUser = data.status === 'Match' && data.user_id && data.user_id > 0;
+            // Check if user is verified (terdaftar di user_machine)
+            const isVerified = data.is_verified === true && data.user_info !== null;
             
-            if (isKnownUser) {
-                // Show known user view
-                console.log('👤 Known user detected:', data.username || data.user_id);
-                showKnownUserView(data);
+            if (isVerified) {
+                // Show verified user view (grant/deny options)
+                console.log('✅ Verified user detected:', data.user_info?.nama || data.username || data.user_id);
+                showVerifiedUserView(data);
             } else {
-                // Show unknown user view (add new user)
-                console.log('❓ Unknown user detected - showing add user form');
-                showUnknownUserView(data);
+                // Show unverified user view (enroll or dismiss)
+                console.log('❌ Unverified user detected - showing enroll/dismiss options');
+                showUnverifiedUserView(data);
             }
             
             console.log('📺 Showing modal...');
@@ -676,10 +707,10 @@
             }
         }
         
-        function showKnownUserView(data) {
-            console.log('📋 showKnownUserView called with:', data);
+        function showVerifiedUserView(data) {
+            console.log('📋 showVerifiedUserView called with:', data);
             
-            // Hide unknown user view, show known user view
+            // Hide unverified user view, show verified user view
             document.getElementById('unknownUserView').style.display = 'none';
             document.getElementById('unknownUserFooter').style.display = 'none';
             document.getElementById('knownUserView').style.display = 'block';
@@ -689,12 +720,13 @@
             document.getElementById('modalHeader').className = 'modal-header bg-primary text-white';
             document.getElementById('modalTitle').textContent = 'Fingerprint Scan Detected';
             
-            // Get user information
-            let userInfo = data.username ? 
-                `${data.username} (ID: ${data.user_id})` : 
-                `User ID: ${data.user_id}`;
+            // Get user information from user_info or fallback to data
+            const userInfo = data.user_info || {};
+            const nama = userInfo.nama || data.username || `User ID: ${data.user_id}`;
+            const posisi = userInfo.posisi || 'N/A';
+            const deviceId = data.device_id || 'AS608_001';
             
-            console.log('📝 Updating known user elements...');
+            console.log('📝 Updating verified user elements...');
             
             // Update modal content with null checks
             const scanUserInfo = document.getElementById('scanUserInfo');
@@ -702,7 +734,7 @@
             const scanDetails = document.getElementById('scanDetails');
             
             if (scanUserInfo) {
-                scanUserInfo.textContent = userInfo;
+                scanUserInfo.textContent = `${nama} (ID: ${data.user_id})`;
             } else {
                 console.error('❌ scanUserInfo element not found!');
             }
@@ -715,9 +747,11 @@
             
             // Build details HTML
             let detailsHTML = `
-                <strong>Status:</strong> <span>${data.status}</span><br>
+                <strong>Nama:</strong> <span>${nama}</span><br>
+                <strong>Posisi:</strong> <span>${posisi}</span><br>
                 <strong>User ID:</strong> <span>${data.user_id || 'N/A'}</span><br>
-                <strong>Store:</strong> <span>${data.store_id || 'Store001'}</span>
+                <strong>Device:</strong> <span>${deviceId}</span><br>
+                <strong>Status:</strong> <span>${data.status || 'Match'}</span>
             `;
             
             // Add confidence if available
@@ -734,10 +768,10 @@
             console.log('✅ Known user view updated successfully');
         }
         
-        async function showUnknownUserView(data) {
-            console.log('❓ showUnknownUserView called with:', data);
+        async function showUnverifiedUserView(data) {
+            console.log('❓ showUnverifiedUserView called with:', data);
             
-            // Hide known user view, show unknown user view
+            // Hide verified user view, show unverified user view
             document.getElementById('knownUserView').style.display = 'none';
             document.getElementById('knownUserFooter').style.display = 'none';
             document.getElementById('unknownUserView').style.display = 'block';
@@ -745,22 +779,36 @@
             
             // Update header
             document.getElementById('modalHeader').className = 'modal-header bg-warning text-dark';
-            document.getElementById('modalTitle').textContent = 'Unknown Fingerprint';
+            document.getElementById('modalTitle').textContent = 'User Tidak Terdaftar';
             
-            // Try to get next available User ID
-            try {
-                const response = await fetch('/api/next_user_id');
-                if (response.ok) {
-                    const data = await response.json();
-                    if (data.next_id) {
-                        document.getElementById('newUserId').value = data.next_id;
-                        document.getElementById('newUserId').placeholder = `Suggested: ${data.next_id}`;
+            // Get fingerprint_id from data
+            const fingerprintId = data.user_id || data.fingerprint_id || null;
+            const deviceId = data.device_id || 'AS608_001';
+            
+            // Set fingerprint_id in form (hidden field or use user_id field)
+            if (fingerprintId) {
+                document.getElementById('newUserId').value = fingerprintId;
+                document.getElementById('newUserId').readOnly = true; // Lock user_id if from scan
+            } else {
+                // Try to get next available User ID
+                try {
+                    const response = await fetch('/api/next_user_id');
+                    if (response.ok) {
+                        const nextData = await response.json();
+                        if (nextData.next_id) {
+                            document.getElementById('newUserId').value = nextData.next_id;
+                            document.getElementById('newUserId').placeholder = `Suggested: ${nextData.next_id}`;
+                        }
                     }
+                } catch (error) {
+                    console.log('Could not fetch next user ID:', error);
                 }
-            } catch (error) {
-                console.log('Could not fetch next user ID:', error);
-                // Not critical, just leave field empty
+                document.getElementById('newUserId').readOnly = false;
             }
+            
+            // Store device_id and fingerprint_id for enrollment
+            document.getElementById('newUserId').dataset.deviceId = deviceId;
+            document.getElementById('newUserId').dataset.fingerprintId = fingerprintId || '';
             
             // Update timestamp with null check
             const unknownTimestamp = document.getElementById('unknownTimestamp');
@@ -770,15 +818,20 @@
                 console.error('❌ unknownTimestamp element not found!');
             }
             
-            // Clear form with null check
+            // Clear form with null check (except user_id if locked)
             const form = document.getElementById('addUserFromScanForm');
             if (form) {
+                const userIdField = document.getElementById('newUserId');
+                const savedValue = userIdField.value;
                 form.reset();
+                if (userIdField.readOnly) {
+                    userIdField.value = savedValue;
+                }
             } else {
                 console.error('❌ addUserFromScanForm element not found!');
             }
             
-            console.log('✅ Unknown user view updated successfully');
+            console.log('✅ Unverified user view updated successfully');
         }
 
         // Grant access
@@ -790,11 +843,17 @@
             
             console.log('Granting access for:', currentScanData);
             
+            // Get nama from user_info or fallback
+            const userInfo = currentScanData.user_info || {};
+            const nama = userInfo.nama || currentScanData.username || currentScanData.nama || 'Unknown';
+            
             socket.emit('grant_access', {
                 user_id: currentScanData.user_id,
-                action: currentScanData.status,
+                action: currentScanData.status || 'access_granted',
                 username: currentScanData.username,
-                device_id: currentScanData.device_id  // Include device_id for relay control
+                nama: nama,
+                device_id: currentScanData.device_id,
+                finger_template_id: currentScanData.user_id || currentScanData.fingerprint_id
             });
             
             // Close the modal using global instance
@@ -813,11 +872,17 @@
             
             console.log('Denying access for:', currentScanData);
             
+            // Get nama from user_info or fallback
+            const userInfo = currentScanData.user_info || {};
+            const nama = userInfo.nama || currentScanData.username || currentScanData.nama || 'Unknown';
+            
             socket.emit('deny_access', {
                 user_id: currentScanData.user_id,
-                action: currentScanData.status,
+                action: currentScanData.status || 'access_denied',
                 username: currentScanData.username,
-                device_id: currentScanData.device_id  // Include device_id for relay control
+                nama: nama,
+                device_id: currentScanData.device_id,
+                finger_template_id: currentScanData.user_id || currentScanData.fingerprint_id
             });
             
             // Close the modal using global instance
@@ -827,42 +892,59 @@
             }
         }
         
-        // Enroll new user from unknown fingerprint
+        // Enroll new user from unverified fingerprint
         async function enrollNewUser() {
             const userId = document.getElementById('newUserId').value;
-            const username = document.getElementById('newUsername').value;
+            const nama = document.getElementById('newUsername').value;
+            const posisi = document.getElementById('newUserPosisi')?.value || '';
+            const deviceId = document.getElementById('newUserId').dataset.deviceId || currentScanData?.device_id || 'AS608_001';
+            const fingerprintId = document.getElementById('newUserId').dataset.fingerprintId || userId;
             
-            if (!userId || !username) {
-                showNotification('Please fill in all required fields', 'error');
+            if (!userId || !nama) {
+                showNotification('Mohon isi semua field yang wajib (Nama)', 'error');
                 return;
             }
             
             // Validate user ID is a positive number
             const userIdInt = parseInt(userId);
             if (isNaN(userIdInt) || userIdInt <= 0) {
-                showNotification('User ID must be a positive number', 'error');
+                showNotification('User ID harus berupa angka positif', 'error');
                 return;
             }
             
-            console.log('📝 Enrolling new user:', {userId: userIdInt, username});
+            console.log('📝 Enrolling new user:', {user_id: userIdInt, nama, posisi, device_id: deviceId, finger_template_id: fingerprintId});
             
             try {
-                // Send enrollment request to server
-                const response = await fetch('/api/enroll_user', {
+                // Send enrollment request to server using enroll_user_from_modal endpoint
+                const response = await fetch('/api/enroll_user_from_modal', {
                     method: 'POST',
                     headers: {
                         'Content-Type': 'application/json'
                     },
                     body: JSON.stringify({
                         user_id: userIdInt,
-                        username: username
+                        nama: nama,
+                        posisi: posisi,
+                        device_id: deviceId,
+                        finger_template_id: fingerprintId || userIdInt
                     })
                 });
                 
                 const data = await response.json();
                 
                 if (response.ok) {
-                    showNotification(`Enrollment started for ${username}. Please follow instructions on the local machine.`, 'success');
+                    showNotification(`User ${nama} berhasil didaftarkan!`, 'success');
+                    
+                    // Log access as granted (user baru didaftarkan)
+                    if (currentScanData) {
+                        socket.emit('grant_access', {
+                            user_id: userIdInt,
+                            action: 'access_granted',
+                            nama: nama,
+                            device_id: deviceId,
+                            finger_template_id: fingerprintId || userIdInt
+                        });
+                    }
                     
                     // Close modal
                     if (scanModal) {
@@ -874,29 +956,42 @@
                         if (typeof loadUsers === 'function') {
                             loadUsers();
                         }
-                    }, 2000);
+                    }, 1000);
                 } else {
                     // Show detailed error message
-                    const errorMsg = data.error || 'Failed to start enrollment';
+                    const errorMsg = data.error || 'Gagal mendaftarkan user';
                     console.error('❌ Enrollment error:', data);
-                    if (data.debug) {
-                        console.error('🐛 Debug info:', data.debug);
-                    }
                     showNotification(`Error: ${errorMsg}`, 'error');
                 }
             } catch (error) {
                 console.error('❌ Error enrolling user:', error);
-                showNotification('Error enrolling user', 'error');
+                showNotification('Error mendaftarkan user', 'error');
             }
         }
         
-        // Dismiss unknown user modal
+        // Dismiss unverified user (log as denied)
         function dismissUnknownUser() {
-            console.log('Dismissing unknown user modal');
+            console.log('Dismissing unverified user - logging as denied');
+            
+            if (currentScanData) {
+                const fingerprintId = currentScanData.user_id || currentScanData.fingerprint_id;
+                const deviceId = currentScanData.device_id || 'AS608_001';
+                
+                // Log as denied
+                socket.emit('deny_access', {
+                    user_id: fingerprintId,
+                    action: 'access_denied',
+                    nama: 'Unknown User',
+                    device_id: deviceId,
+                    finger_template_id: fingerprintId
+                });
+            }
+            
             if (scanModal) {
                 scanModal.hide();
             }
         }
+        
 
         // Test functions
         function testScanNotification() {
@@ -966,6 +1061,48 @@
             } catch (error) {
                 console.error('❌ Error simulating scan:', error);
                 showNotification('Error simulating scan', 'error');
+            }
+        }
+        
+        async function triggerSelfInspection() {
+            try {
+                console.log('🔊 Triggering self-inspection audio...');
+                
+                // Disable button to prevent multiple clicks
+                const btn = event.target.closest('button');
+                const originalText = btn.innerHTML;
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Sending...';
+                
+                const response = await fetch('/api/audio/self_inspection', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    }
+                });
+                
+                const data = await response.json();
+                console.log('📋 Self-inspection response:', data);
+                
+                // Re-enable button
+                btn.disabled = false;
+                btn.innerHTML = originalText;
+                
+                if (response.ok && data.status === 'queued') {
+                    showNotification('✅ Self-inspection audio command sent successfully!', 'success');
+                } else {
+                    showNotification(`❌ Failed: ${data.error || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                console.error('❌ Error triggering self-inspection:', error);
+                showNotification('Error triggering self-inspection', 'error');
+                
+                // Re-enable button on error
+                const btn = event.target.closest('button');
+                if (btn) {
+                    btn.disabled = false;
+                    btn.innerHTML = '<i class="fas fa-volume-up me-1"></i>Self-Inspection';
+                }
             }
         }
         
@@ -1069,15 +1206,90 @@
         // Load dashboard statistics
         async function loadDashboardStats() {
             try {
+                console.log('📊 Loading dashboard stats...');
                 const response = await fetch('/api/dashboard_stats');
-                const data = await response.json();
                 
-                document.getElementById('total-users').textContent = data.total_users;
-                document.getElementById('total-scans-today').textContent = data.total_scans_today;
-                document.getElementById('successful-access-today').textContent = data.successful_access_today;
-                document.getElementById('denied-access-today').textContent = data.denied_access_today;
+                if (!response.ok) {
+                    console.error('❌ Stats API error:', response.status);
+                    return;
+                }
+                
+                const data = await response.json();
+                console.log('📦 Stats data:', data);
+                
+                document.getElementById('total-users').textContent = data.total_users || '0';
+                document.getElementById('total-scans-today').textContent = data.total_scans_today || '0';
+                document.getElementById('successful-access-today').textContent = data.successful_access_today || '0';
+                document.getElementById('denied-access-today').textContent = data.denied_access_today || '0';
+                
+                console.log('✅ Dashboard stats updated');
             } catch (error) {
-                console.error('Error loading dashboard stats:', error);
+                console.error('❌ Error loading dashboard stats:', error);
+            }
+        }
+
+        // Update door status display
+        function updateDoorStatus(data) {
+            try {
+                const isClosed = data.is_closed;
+                const statusText = data.status_text || (isClosed ? 'Tertutup' : 'Terbuka');
+                const timestamp = data.timestamp;
+                
+                // Update status text
+                const statusElement = document.getElementById('door-status-text');
+                if (statusElement) {
+                    statusElement.textContent = statusText;
+                }
+                
+                // Update icon
+                const iconElement = document.getElementById('door-icon');
+                if (iconElement) {
+                    if (isClosed) {
+                        iconElement.className = 'fas fa-door-closed fa-2x mb-2';
+                    } else {
+                        iconElement.className = 'fas fa-door-open fa-2x mb-2';
+                    }
+                }
+                
+                // Update card color
+                const cardElement = document.getElementById('door-status-card');
+                if (cardElement) {
+                    // Remove existing status classes
+                    cardElement.classList.remove('success', 'danger', 'warning');
+                    
+                    // Add appropriate class
+                    if (isClosed) {
+                        cardElement.classList.add('success');
+                    } else {
+                        cardElement.classList.add('danger');
+                    }
+                }
+                
+                // Update timestamp
+                const timeElement = document.getElementById('door-status-time');
+                if (timeElement && timestamp) {
+                    try {
+                        const date = new Date(timestamp);
+                        const timeStr = date.toLocaleTimeString('id-ID', { 
+                            hour: '2-digit', 
+                            minute: '2-digit', 
+                            second: '2-digit' 
+                        });
+                        timeElement.textContent = timeStr;
+                    } catch (e) {
+                        timeElement.textContent = 'Just now';
+                    }
+                }
+                
+                console.log(`✅ Door status updated: ${statusText} (${isClosed ? 'CLOSED' : 'OPEN'})`);
+                
+                // Show notification if door is opened (optional)
+                if (!isClosed) {
+                    showNotification('Pintu terbuka!', 'warning');
+                }
+                
+            } catch (error) {
+                console.error('❌ Error updating door status:', error);
             }
         }
 
@@ -1190,20 +1402,64 @@
         // Load charts
         async function loadCharts() {
             try {
+                console.log('📊 Loading charts...');
+                
+                // Check if Chart.js is loaded
+                if (typeof Chart === 'undefined') {
+                    console.error('❌ Chart.js is not loaded!');
+                    return;
+                }
+                console.log('✅ Chart.js is loaded');
+                
                 const response = await fetch('/api/charts/daily_stats?days=7');
+                console.log('📡 Response status:', response.status);
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('❌ API error:', response.status, errorText);
+                    return;
+                }
+                
                 const data = await response.json();
+                console.log('📦 Chart data received:', data);
+                console.log('  - Daily scans:', data.daily_scans?.length || 0, 'days');
+                console.log('  - Daily access:', data.daily_access?.length || 0, 'records');
+                
+                if (!data.daily_scans || data.daily_scans.length === 0) {
+                    console.warn('⚠️ No daily_scans data available');
+                }
+                
+                if (!data.daily_access || data.daily_access.length === 0) {
+                    console.warn('⚠️ No daily_access data available');
+                }
                 
                 // Daily scans chart
-                const scansCtx = document.getElementById('dailyScansChart').getContext('2d');
-                if (dailyScansChart) dailyScansChart.destroy();
+                const scansCanvas = document.getElementById('dailyScansChart');
+                if (!scansCanvas) {
+                    console.error('❌ dailyScansChart canvas not found!');
+                    return;
+                }
                 
+                const scansCtx = scansCanvas.getContext('2d');
+                if (dailyScansChart) {
+                    console.log('🔄 Destroying old daily scans chart');
+                    dailyScansChart.destroy();
+                }
+                
+                console.log('📈 Creating daily scans chart...');
                 dailyScansChart = new Chart(scansCtx, {
                     type: 'line',
                     data: {
-                        labels: data.daily_scans.map(item => new Date(item.date).toLocaleDateString()),
+                        labels: data.daily_scans.map(item => {
+                            console.log('  Date item:', item.date);
+                            return new Date(item.date).toLocaleDateString();
+                        }),
                         datasets: [{
                             label: 'Daily Scans',
-                            data: data.daily_scans.map(item => item.scan_count),
+                            data: data.daily_scans.map(item => {
+                                console.log('  Scan count:', item.scan_count);
+                                return item.scan_count;
+                            }),
                             borderColor: 'rgb(75, 192, 192)',
                             backgroundColor: 'rgba(75, 192, 192, 0.2)',
                             tension: 0.1
@@ -1219,15 +1475,28 @@
                         }
                     }
                 });
+                console.log('✅ Daily scans chart created');
                 
                 // Access status chart
-                const accessCtx = document.getElementById('accessStatusChart').getContext('2d');
-                if (accessStatusChart) accessStatusChart.destroy();
+                const accessCanvas = document.getElementById('accessStatusChart');
+                if (!accessCanvas) {
+                    console.error('❌ accessStatusChart canvas not found!');
+                    return;
+                }
+                
+                const accessCtx = accessCanvas.getContext('2d');
+                if (accessStatusChart) {
+                    console.log('🔄 Destroying old access status chart');
+                    accessStatusChart.destroy();
+                }
                 
                 const granted = data.daily_access.filter(item => item.granted_denied === 'granted')
                     .reduce((sum, item) => sum + parseInt(item.count), 0);
                 const denied = data.daily_access.filter(item => item.granted_denied === 'denied')
                     .reduce((sum, item) => sum + parseInt(item.count), 0);
+                
+                console.log('📊 Access stats - Granted:', granted, 'Denied:', denied);
+                console.log('📉 Creating access status chart...');
                 
                 accessStatusChart = new Chart(accessCtx, {
                     type: 'doughnut',
@@ -1243,8 +1512,12 @@
                         maintainAspectRatio: false
                     }
                 });
+                console.log('✅ Access status chart created');
+                console.log('🎉 All charts loaded successfully!');
+                
             } catch (error) {
-                console.error('Error loading charts:', error);
+                console.error('❌ Error loading charts:', error);
+                console.error('❌ Error stack:', error.stack);
             }
         }
 
@@ -1443,18 +1716,79 @@
                 if (startDate) url += `start_date=${startDate}&`;
                 if (endDate) url += `end_date=${endDate}`;
                 
+                console.log('Fetching attendance report from:', url);
+                
                 const response = await fetch(url);
+                
+                // Check if response is OK
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    console.error('API Error:', response.status, errorText);
+                    showNotification(`Error: ${response.status} - ${response.statusText}`, 'error');
+                    return;
+                }
+                
                 const data = await response.json();
+                console.log('API Response:', data);
                 
-                // Create CSV content
-                let csv = 'User ID,Username,Days Present,First Date,Last Date,Clock In Count,Clock Out Count,Avg Hours Worked,Total Access Granted\n';
+                // Check for errors in response
+                if (data.error) {
+                    console.error('API returned error:', data.error);
+                    showNotification('Error: ' + data.error, 'error');
+                    return;
+                }
                 
-                data.report.forEach(record => {
-                    csv += `${record.user_id},${record.username || ''},${record.days_present || 0},${record.first_date || ''},${record.last_date || ''},${record.clock_in_count || 0},${record.clock_out_count || 0},${(record.avg_hours_worked || 0).toFixed(2)},${record.total_access_granted || 0}\n`;
+                // Check if attendance data exists and is an array
+                if (!data) {
+                    console.error('No data received from API');
+                    showNotification('No data received from server', 'error');
+                    return;
+                }
+                
+                if (!data.attendance) {
+                    console.error('data.attendance is undefined. Full response:', data);
+                    showNotification('Invalid response format from server', 'error');
+                    return;
+                }
+                
+                if (!Array.isArray(data.attendance)) {
+                    console.error('data.attendance is not an array. Type:', typeof data.attendance, 'Value:', data.attendance);
+                    showNotification('Invalid data format: attendance is not an array', 'error');
+                    return;
+                }
+                
+                // If no data, show message
+                if (data.attendance.length === 0) {
+                    showNotification('No attendance records found for the selected date range', 'info');
+                    return;
+                }
+                
+                console.log(`Processing ${data.attendance.length} attendance records`);
+                
+                // Create CSV content with proper headers matching API response
+                let csv = 'Attendance Date,User ID,Username,Clock In,Clock Out,Hours Worked,Total Granted,Location In,Location Out\n';
+                
+                // Process each record
+                data.attendance.forEach((record, index) => {
+                    try {
+                        const attendanceDate = record.attendance_date || '';
+                        const userId = record.user_id || '';
+                        const username = (record.username || '').replace(/,/g, ';'); // Replace commas in username
+                        const clockIn = record.clock_in || '';
+                        const clockOut = record.clock_out || '';
+                        const hoursWorked = record.hours_worked ? parseFloat(record.hours_worked).toFixed(2) : '';
+                        const totalGranted = record.total_granted || 0;
+                        const locationIn = record.location_in_display || '';
+                        const locationOut = record.location_out_display || '';
+                        
+                        csv += `${attendanceDate},${userId},${username},${clockIn},${clockOut},${hoursWorked},${totalGranted},${locationIn},${locationOut}\n`;
+                    } catch (recordError) {
+                        console.error(`Error processing record ${index}:`, recordError, record);
+                    }
                 });
                 
                 // Download CSV
-                const blob = new Blob([csv], { type: 'text/csv' });
+                const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
                 const url_blob = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url_blob;
@@ -1464,10 +1798,11 @@
                 document.body.removeChild(a);
                 window.URL.revokeObjectURL(url_blob);
                 
-                showNotification('Attendance report downloaded successfully!', 'success');
+                showNotification(`Attendance report downloaded successfully! (${data.attendance.length} records)`, 'success');
             } catch (error) {
                 console.error('Error generating attendance report:', error);
-                showNotification('Error generating attendance report', 'error');
+                console.error('Error stack:', error.stack);
+                showNotification('Error generating attendance report: ' + (error.message || String(error)), 'error');
             }
         }
 
