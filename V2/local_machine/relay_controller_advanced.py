@@ -44,8 +44,8 @@ class AdvancedRelayController:
             db_config: PostgreSQL database configuration
         """
         # Use environment variables or defaults
-        # GPIO 18 untuk relay (share dengan fingerprint_multi_client.py - perlu nonaktifkan relay di fingerprint_multi_client.py)
-        self.relay_pin = relay_pin or int(os.getenv('RELAY_GPIO_PIN', '18'))
+        # GPIO 23 untuk relay (GPIO 18 sudah digunakan oleh fingerprint_multi_client.py - relay di fingerprint_multi_client.py sudah dinonaktifkan)
+        self.relay_pin = relay_pin or int(os.getenv('RELAY_GPIO_PIN', '23'))
         self.input_pin = input_pin or int(os.getenv('INPUT_GPIO_PIN', '24'))
         self.output_pin = output_pin or int(os.getenv('OUTPUT_GPIO_PIN', '25'))
         # GPIO pins are set above from parameters or environment variables
