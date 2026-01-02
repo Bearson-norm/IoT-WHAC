@@ -274,8 +274,54 @@ class MultiSensorFingerprintClient:
             logger.error("❌ No sensors configured!")
             raise ValueError("No sensors configured")
     
-    def auto_detect_fingerprint_port(self, device_id):
-        """Auto-detect AS608 fingerprint sensor port for a specific device"""
+    def find_alternative_ttyama_ports(self, exclude_ports=None):
+        """Find available ttyAMA ports as alternatives
+        
+        Args:
+            exclude_ports: List of ports to exclude (already in use)
+            
+        Returns:
+            List of available ttyAMA ports sorted by preference
+        """
+        if exclude_ports is None:
+            exclude_ports = []
+        
+        # Get all ttyAMA ports
+        ttyama_ports = sorted(glob.glob('/dev/ttyAMA*'))
+        
+        # Filter out excluded ports and non-existent ports
+        available_ports = []
+        for port in ttyama_ports:
+            if port not in exclude_ports and os.path.exists(port):
+                available_ports.append(port)
+        
+        # Prefer ttyAMA2, ttyAMA3, ttyAMA4, ttyAMA5 (uart3-5)
+        # These are typically used for additional sensors
+        preferred_order = ['/dev/ttyAMA2', '/dev/ttyAMA3', '/dev/ttyAMA4', '/dev/ttyAMA5', '/dev/ttyAMA1', '/dev/ttyAMA0']
+        
+        # Sort by preference
+        sorted_ports = []
+        for preferred in preferred_order:
+            if preferred in available_ports:
+                sorted_ports.append(preferred)
+        
+        # Add any remaining ports
+        for port in available_ports:
+            if port not in sorted_ports:
+                sorted_ports.append(port)
+        
+        return sorted_ports
+    
+    def auto_detect_fingerprint_port(self, device_id, prefer_ttyama=False):
+        """Auto-detect AS608 fingerprint sensor port for a specific device
+        
+        Args:
+            device_id: Device ID for logging
+            prefer_ttyama: If True, prefer ttyAMA ports over USB ports
+            
+        Returns:
+            Port path if found, None otherwise
+        """
         logger.info(f"[{device_id}] 🔍 Auto-detecting fingerprint sensor port...")
         
         if os.name == 'posix':  # Linux/Unix (Raspberry Pi)
@@ -302,6 +348,12 @@ class MultiSensorFingerprintClient:
             # Filter out ports already used by other sensors
             used_ports = [s.port for s in self.sensors if s.port]
             possible_ports = [p for p in possible_ports if p not in used_ports]
+            
+            # If prefer_ttyama, prioritize ttyAMA ports
+            if prefer_ttyama:
+                ttyama_ports = [p for p in possible_ports if 'ttyAMA' in p]
+                other_ports = [p for p in possible_ports if 'ttyAMA' not in p]
+                possible_ports = ttyama_ports + other_ports
             
         elif os.name == 'nt':  # Windows
             try:
@@ -489,22 +541,115 @@ class MultiSensorFingerprintClient:
             logger.error(f"Database initialization error: {e}")
     
     def connect_all_sensors(self):
-        """Connect to all configured sensors"""
+        """Connect to all configured sensors with automatic fallback to alternative ports"""
         connected_count = 0
+        failed_sensors = []
+        
         for sensor in self.sensors:
             try:
                 if sensor.connect():
                     connected_count += 1
                 else:
-                    logger.error(f"[{sensor.device_id}] Failed to connect")
+                    logger.warning(f"[{sensor.device_id}] Failed to connect to {sensor.port}")
+                    failed_sensors.append(sensor)
             except Exception as e:
-                logger.error(f"[{sensor.device_id}] Connection error: {e}")
+                logger.warning(f"[{sensor.device_id}] Connection error to {sensor.port}: {e}")
+                failed_sensors.append(sensor)
+        
+        # Try alternative ports for failed sensors
+        if failed_sensors:
+            logger.info(f"🔄 Attempting to find alternative ports for {len(failed_sensors)} failed sensor(s)...")
+            
+            # Get list of already connected ports
+            connected_ports = [s.port for s in self.sensors if s.connected]
+            
+            for sensor in failed_sensors:
+                # Check if this is a ttyAMA port that failed
+                if 'ttyAMA' in sensor.port:
+                    logger.info(f"[{sensor.device_id}] 🔍 Looking for alternative ttyAMA ports...")
+                    
+                    # Find alternative ttyAMA ports
+                    alternative_ports = self.find_alternative_ttyama_ports(exclude_ports=connected_ports)
+                    
+                    if alternative_ports:
+                        logger.info(f"[{sensor.device_id}] Found {len(alternative_ports)} alternative ttyAMA port(s): {alternative_ports}")
+                        
+                        # Try each alternative port
+                        for alt_port in alternative_ports:
+                            logger.info(f"[{sensor.device_id}] Trying alternative port: {alt_port}")
+                            
+                            # Release lock on original port if exists
+                            if sensor.port_lock_file:
+                                sensor.release_port_lock()
+                            
+                            # Temporarily change port
+                            original_port = sensor.port
+                            sensor.port = alt_port
+                            
+                            try:
+                                if sensor.connect():
+                                    logger.info(f"[{sensor.device_id}] ✅ Successfully connected to alternative port {alt_port}!")
+                                    connected_count += 1
+                                    connected_ports.append(alt_port)
+                                    break  # Success, no need to try other alternatives
+                                else:
+                                    logger.warning(f"[{sensor.device_id}] Failed to connect to {alt_port}")
+                                    sensor.port = original_port  # Restore original port
+                            except Exception as e:
+                                logger.warning(f"[{sensor.device_id}] Error connecting to {alt_port}: {e}")
+                                sensor.port = original_port  # Restore original port
+                        else:
+                            # All alternatives failed, try general auto-detection
+                            logger.info(f"[{sensor.device_id}] All ttyAMA alternatives failed, trying general auto-detection...")
+                            detected = self.auto_detect_fingerprint_port(sensor.device_id, prefer_ttyama=True)
+                            if detected and detected not in connected_ports:
+                                logger.info(f"[{sensor.device_id}] ✅ Auto-detected alternative port: {detected}")
+                                sensor.port = detected
+                                if sensor.connect():
+                                    connected_count += 1
+                                    connected_ports.append(detected)
+                    else:
+                        # No ttyAMA alternatives, try general auto-detection
+                        logger.info(f"[{sensor.device_id}] No ttyAMA alternatives available, trying general auto-detection...")
+                        # Release lock on original port if exists
+                        if sensor.port_lock_file:
+                            sensor.release_port_lock()
+                        detected = self.auto_detect_fingerprint_port(sensor.device_id, prefer_ttyama=True)
+                        if detected and detected not in connected_ports:
+                            logger.info(f"[{sensor.device_id}] ✅ Auto-detected alternative port: {detected}")
+                            sensor.port = detected
+                            if sensor.connect():
+                                connected_count += 1
+                                connected_ports.append(detected)
+                else:
+                    # Not a ttyAMA port, try general auto-detection
+                    logger.info(f"[{sensor.device_id}] Trying general auto-detection for non-ttyAMA port...")
+                    # Release lock on original port if exists
+                    if sensor.port_lock_file:
+                        sensor.release_port_lock()
+                    detected = self.auto_detect_fingerprint_port(sensor.device_id)
+                    if detected and detected not in connected_ports:
+                        logger.info(f"[{sensor.device_id}] ✅ Auto-detected alternative port: {detected}")
+                        sensor.port = detected
+                        if sensor.connect():
+                            connected_count += 1
+                            connected_ports.append(detected)
         
         if connected_count == 0:
-            logger.error("❌ No sensors connected!")
+            logger.error("❌ No sensors connected after trying all alternatives!")
             return False
         
         logger.info(f"✅ {connected_count}/{len(self.sensors)} sensors connected successfully")
+        
+        # Log final port assignments
+        if failed_sensors:
+            logger.info("📋 Final port assignments:")
+            for sensor in self.sensors:
+                if sensor.connected:
+                    logger.info(f"  ✓ {sensor.device_id}: {sensor.port}")
+                else:
+                    logger.warning(f"  ✗ {sensor.device_id}: {sensor.port} (FAILED)")
+        
         return True
     
     def connect_mqtt(self):
