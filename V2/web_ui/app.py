@@ -55,6 +55,7 @@ MQTT_AUDIO_TOPIC = os.getenv('MQTT_AUDIO_TOPIC', 'WHAC/Store001/audio')
 MQTT_AUDIO_RESPONSE_TOPIC = os.getenv('MQTT_AUDIO_RESPONSE_TOPIC', 'WHAC/Store001/audio_response')
 MQTT_DOOR_STATUS_TOPIC = os.getenv('MQTT_DOOR_STATUS_TOPIC', 'WHAC/Store001/door_status')
 MQTT_GPIO_LOG_TOPIC = os.getenv('MQTT_GPIO_LOG_TOPIC', 'WHAC/Store001/gpio_log')
+MQTT_ALARM_TOPIC = os.getenv('MQTT_ALARM_TOPIC', 'WHAC/Store001/alarm')
 
 # Global MQTT client
 mqtt_client = None
@@ -760,6 +761,47 @@ def handle_gpio_log_message(payload):
                 """, (gpio_pin, gpio_state, event_type, user_id, device_id, description))
             
             conn.commit()
+            
+            # If event_type is 'alarm_control', also log to alarm_log table
+            if event_type == 'alarm_control':
+                # Get username from user_id if available
+                username = None
+                if user_id:
+                    try:
+                        cursor.execute("SELECT username FROM web_users WHERE id = %s", (user_id,))
+                        user_result = cursor.fetchone()
+                        if user_result:
+                            username = user_result[0]
+                    except:
+                        pass
+                
+                action = 'activate' if gpio_state == 'LOW' else 'deactivate'
+                alarm_description = description or f'Alarm {action}d - GPIO {gpio_pin} set to {gpio_state}'
+                
+                # Check if alarm_log table exists
+                cursor.execute("""
+                    SELECT EXISTS (
+                        SELECT FROM information_schema.tables 
+                        WHERE table_schema = 'public' 
+                        AND table_name = 'alarm_log'
+                    );
+                """)
+                alarm_table_exists = cursor.fetchone()[0]
+                
+                if alarm_table_exists:
+                    if parsed_timestamp:
+                        cursor.execute("""
+                            INSERT INTO alarm_log (action, gpio_pin, gpio_state, user_id, username, description, timestamp)
+                            VALUES (%s, %s, %s, %s, %s, %s, %s)
+                        """, (action, gpio_pin, gpio_state, user_id, username, alarm_description, parsed_timestamp))
+                    else:
+                        cursor.execute("""
+                            INSERT INTO alarm_log (action, gpio_pin, gpio_state, user_id, username, description, timestamp)
+                            VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
+                        """, (action, gpio_pin, gpio_state, user_id, username, alarm_description))
+                    conn.commit()
+                    logger.info(f"✅ Alarm log also saved to alarm_log table: {action} GPIO({gpio_pin}) = {gpio_state}")
+            
             cursor.close()
             conn.close()
             
@@ -1226,6 +1268,84 @@ def handle_deny_access(data):
             'message': str(e)
         })
 
+@socketio.on('activate_alarm')
+def handle_activate_alarm(data):
+    """Handle alarm activation command"""
+    try:
+        user_id = session.get('user_id')
+        username = session.get('username', 'Unknown')
+        
+        logger.info(f"Activating alarm for user {user_id} ({username})")
+        
+        # Send MQTT command to activate alarm (GPIO 25 LOW)
+        success = send_alarm_command('activate', user_id, username)
+        
+        if success:
+            # Log to database
+            log_alarm_action('activate', 25, 'LOW', user_id, username, 
+                           f'Alarm activated by {username} - GPIO 25 set to LOW')
+            
+            emit('alarm_result', {
+                'status': 'success',
+                'message': 'Alarm activated successfully',
+                'action': 'activate',
+                'gpio_pin': 25,
+                'gpio_state': 'LOW'
+            })
+            logger.info(f"✓ Alarm activated for user {user_id} ({username})")
+        else:
+            emit('alarm_result', {
+                'status': 'error',
+                'message': 'Failed to send alarm command - Check MQTT connection to Raspberry Pi'
+            })
+            logger.error(f"✗ Failed to activate alarm - MQTT command failed")
+        
+    except Exception as e:
+        logger.error(f"Error activating alarm: {e}")
+        emit('alarm_result', {
+            'status': 'error',
+            'message': str(e)
+        })
+
+@socketio.on('deactivate_alarm')
+def handle_deactivate_alarm(data):
+    """Handle alarm deactivation command"""
+    try:
+        user_id = session.get('user_id')
+        username = session.get('username', 'Unknown')
+        
+        logger.info(f"Deactivating alarm for user {user_id} ({username})")
+        
+        # Send MQTT command to deactivate alarm (GPIO 25 HIGH)
+        success = send_alarm_command('deactivate', user_id, username)
+        
+        if success:
+            # Log to database
+            log_alarm_action('deactivate', 25, 'HIGH', user_id, username,
+                           f'Alarm deactivated by {username} - GPIO 25 set to HIGH')
+            
+            emit('alarm_result', {
+                'status': 'success',
+                'message': 'Alarm deactivated successfully',
+                'action': 'deactivate',
+                'gpio_pin': 25,
+                'gpio_state': 'HIGH'
+            })
+            logger.info(f"✓ Alarm deactivated for user {user_id} ({username})")
+        else:
+            emit('alarm_result', {
+                'status': 'error',
+                'message': 'Failed to send alarm command - Check MQTT connection to Raspberry Pi'
+            })
+            logger.error(f"✗ Failed to deactivate alarm - MQTT command failed")
+        
+    except Exception as e:
+        logger.error(f"Error deactivating alarm: {e}")
+        emit('alarm_result', {
+            'status': 'error',
+            'message': str(e)
+        })
+
 def send_relay_command(command, user_id, action, device_id=None):
     """Send relay control command via MQTT with GPIO control"""
     try:
@@ -1268,6 +1388,76 @@ def send_relay_command(command, user_id, action, device_id=None):
             
     except Exception as e:
         logger.error(f"Error sending relay command: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        return False
+
+def send_alarm_command(action, user_id=None, username=None):
+    """Send alarm control command via MQTT (activate/deactivate GPIO 25)"""
+    try:
+        # Ensure MQTT connection is active
+        if not ensure_mqtt_connection():
+            logger.error("❌ Cannot establish MQTT connection")
+            return False
+        
+        # Test connection with ping to verify it's really working
+        if not test_mqtt_connection():
+            logger.warning("⚠️  MQTT ping failed, but connection appears active - proceeding anyway")
+        
+        payload = {
+            'command': action,  # 'activate' or 'deactivate'
+            'gpio_pin': 25,
+            'gpio_state': 'LOW' if action == 'activate' else 'HIGH',
+            'user_id': user_id,
+            'username': username,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'web_ui'
+        }
+        
+        logger.info(f"📤 Sending alarm command: {action} for GPIO 25 (user: {username})")
+        logger.info(f"📤 MQTT Topic: {MQTT_ALARM_TOPIC}")
+        logger.info(f"📤 Payload: {payload}")
+        
+        result = mqtt_client.publish(MQTT_ALARM_TOPIC, json.dumps(payload), qos=1)
+        
+        if result.rc == mqtt.MQTT_ERR_SUCCESS:
+            logger.info(f"✓ Alarm command sent successfully: {action}")
+            return True
+        else:
+            logger.error(f"✗ Failed to send alarm command (rc: {result.rc})")
+            logger.error(f"✗ MQTT Error codes: SUCCESS=0, ERR_NO_CONN=3, ERR_CONN_LOST=4")
+            return False
+            
+    except Exception as e:
+        logger.error(f"Error sending alarm command: {e}")
+        import traceback
+        logger.error(f"Full traceback: {traceback.format_exc()}")
+        return False
+
+def log_alarm_action(action, gpio_pin, gpio_state, user_id=None, username=None, description=None):
+    """Log alarm action to database"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            logger.error("❌ Database connection failed for alarm log")
+            return False
+        
+        cursor = conn.cursor()
+        
+        # Insert alarm log
+        cursor.execute("""
+            INSERT INTO alarm_log (action, gpio_pin, gpio_state, user_id, username, description, timestamp)
+            VALUES (%s, %s, %s, %s, %s, %s, %s)
+        """, (action, gpio_pin, gpio_state, user_id, username, description, datetime.now()))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✅ Alarm log saved: {action} GPIO({gpio_pin}) = {gpio_state} by {username}")
+        return True
+        
+    except Exception as e:
+        logger.error(f"Error logging alarm action: {e}")
         import traceback
         logger.error(f"Full traceback: {traceback.format_exc()}")
         return False
@@ -2451,6 +2641,51 @@ def get_action_logs():
         
     except Exception as e:
         logger.error(f"Error getting action logs: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/alarm_logs')
+@login_required
+def get_alarm_logs():
+    """Get alarm logs with pagination"""
+    try:
+        page = int(request.args.get('page', 1))
+        per_page = int(request.args.get('per_page', 50))
+        offset = (page - 1) * per_page
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Get total count
+        cursor.execute("SELECT COUNT(*) as total FROM alarm_log")
+        total = cursor.fetchone()['total']
+        
+        # Get paginated logs
+        cursor.execute("""
+            SELECT id, action, gpio_pin, gpio_state, user_id, username, 
+                   timestamp, description, created_at
+            FROM alarm_log
+            ORDER BY timestamp DESC
+            LIMIT %s OFFSET %s
+        """, (per_page, offset))
+        
+        logs = cursor.fetchall()
+        conn.close()
+        
+        return jsonify({
+            'logs': [dict(row) for row in logs],
+            'pagination': {
+                'page': page,
+                'per_page': per_page,
+                'total': total,
+                'pages': (total + per_page - 1) // per_page
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error getting alarm logs: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/users')

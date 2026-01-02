@@ -91,6 +91,9 @@
                     <button class="btn btn-sm btn-primary" onclick="triggerSelfInspection()" title="Self-Inspection Audio">
                         <i class="fas fa-volume-up me-1"></i>Self-Inspection
                     </button>
+                    <button class="btn btn-sm btn-danger" onclick="activateAlarm()" title="Aktifkan Alarm" id="alarmActivateBtn">
+                        <i class="fas fa-bell me-1"></i>Aktifkan Alarm
+                    </button>
                 </div>
             </div>
         </div>
@@ -484,6 +487,36 @@
         </div>
     </div>
 
+    <!-- Alarm Active Modal -->
+    <div class="modal fade" id="alarmActiveModal" tabindex="-1" data-bs-backdrop="static" data-bs-keyboard="false">
+        <div class="modal-dialog modal-dialog-centered">
+            <div class="modal-content">
+                <div class="modal-header bg-danger text-white">
+                    <h5 class="modal-title">
+                        <i class="fas fa-bell me-2"></i>
+                        Alarm Aktif
+                    </h5>
+                </div>
+                <div class="modal-body text-center">
+                    <div class="mb-3">
+                        <i class="fas fa-exclamation-triangle fa-4x text-danger mb-3"></i>
+                    </div>
+                    <h4 class="text-danger mb-3">Alarm Sedang Aktif!</h4>
+                    <p class="text-muted mb-3">GPIO 25 saat ini dalam keadaan LOW (alarm aktif)</p>
+                    <div class="alert alert-warning">
+                        <i class="fas fa-info-circle me-2"></i>
+                        <strong>Status:</strong> Alarm sedang berjalan. Klik tombol di bawah untuk menonaktifkan alarm.
+                    </div>
+                </div>
+                <div class="modal-footer justify-content-center">
+                    <button type="button" class="btn btn-success btn-lg" onclick="deactivateAlarm()" id="deactivateAlarmBtn">
+                        <i class="fas fa-power-off me-2"></i>Nonaktifkan Alarm
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/socket.io/4.7.2/socket.io.js"></script>
     <script>
@@ -501,6 +534,13 @@
             if (modalElement) {
                 scanModal = new bootstrap.Modal(modalElement);
                 console.log('✅ Scan notification modal initialized');
+            }
+            
+            // Initialize the alarm modal
+            const alarmModalElement = document.getElementById('alarmActiveModal');
+            if (alarmModalElement) {
+                alarmModal = new bootstrap.Modal(alarmModalElement);
+                console.log('✅ Alarm modal initialized');
             }
             
             // Initialize WebSocket connection
@@ -575,6 +615,67 @@
                     }
                 } else {
                     showNotification(data.message, 'error');
+                }
+            });
+            
+            socket.on('alarm_result', function(data) {
+                console.log('Alarm result:', data);
+                const btn = document.getElementById('alarmActivateBtn');
+                const deactivateBtn = document.getElementById('deactivateAlarmBtn');
+                
+                if (data.status === 'success') {
+                    showNotification(data.message, 'success');
+                    
+                    if (data.action === 'activate') {
+                        // Alarm activated - show modal
+                        if (!alarmModal) {
+                            const modalElement = document.getElementById('alarmActiveModal');
+                            if (modalElement) {
+                                alarmModal = new bootstrap.Modal(modalElement);
+                            }
+                        }
+                        if (alarmModal) {
+                            alarmModal.show();
+                        }
+                        
+                        // Update button state
+                        if (btn) {
+                            btn.disabled = true;
+                            btn.innerHTML = '<i class="fas fa-bell-slash me-1"></i>Alarm Aktif';
+                            btn.classList.remove('btn-danger');
+                            btn.classList.add('btn-warning');
+                        }
+                    } else if (data.action === 'deactivate') {
+                        // Alarm deactivated - hide modal
+                        if (alarmModal) {
+                            alarmModal.hide();
+                        }
+                        
+                        // Update button state
+                        if (btn) {
+                            btn.disabled = false;
+                            btn.innerHTML = '<i class="fas fa-bell me-1"></i>Aktifkan Alarm';
+                            btn.classList.remove('btn-warning');
+                            btn.classList.add('btn-danger');
+                        }
+                        
+                        if (deactivateBtn) {
+                            deactivateBtn.disabled = false;
+                            deactivateBtn.innerHTML = '<i class="fas fa-power-off me-2"></i>Nonaktifkan Alarm';
+                        }
+                    }
+                } else {
+                    showNotification(data.message, 'error');
+                    
+                    // Reset button states on error
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.innerHTML = '<i class="fas fa-bell me-1"></i>Aktifkan Alarm';
+                    }
+                    if (deactivateBtn) {
+                        deactivateBtn.disabled = false;
+                        deactivateBtn.innerHTML = '<i class="fas fa-power-off me-2"></i>Nonaktifkan Alarm';
+                    }
                 }
             });
             
@@ -874,6 +975,41 @@
         }
 
         // Deny access
+        // Alarm control functions
+        let alarmModal = null;
+        
+        function activateAlarm() {
+            console.log('🔔 Activating alarm...');
+            
+            // Show loading state
+            const btn = document.getElementById('alarmActivateBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin me-1"></i>Mengaktifkan...';
+            }
+            
+            // Send activate alarm command via SocketIO
+            socket.emit('activate_alarm', {}, function(response) {
+                console.log('Alarm activation response:', response);
+            });
+        }
+        
+        function deactivateAlarm() {
+            console.log('🔕 Deactivating alarm...');
+            
+            // Show loading state
+            const btn = document.getElementById('deactivateAlarmBtn');
+            if (btn) {
+                btn.disabled = true;
+                btn.innerHTML = '<i class="fas fa-spinner fa-spin me-2"></i>Menonaktifkan...';
+            }
+            
+            // Send deactivate alarm command via SocketIO
+            socket.emit('deactivate_alarm', {}, function(response) {
+                console.log('Alarm deactivation response:', response);
+            });
+        }
+        
         function denyAccess() {
             if (!currentScanData) {
                 console.error('No current scan data available');

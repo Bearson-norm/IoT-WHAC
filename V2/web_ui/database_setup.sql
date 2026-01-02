@@ -152,6 +152,19 @@ CREATE TABLE attendance (
     UNIQUE(user_id, attendance_date)
 );
 
+-- 10. Alarm Log (alarm activation/deactivation logs)
+CREATE TABLE alarm_log (
+    id SERIAL PRIMARY KEY,
+    action VARCHAR(20) NOT NULL,  -- 'activate' or 'deactivate'
+    gpio_pin INTEGER NOT NULL,
+    gpio_state VARCHAR(10) NOT NULL,  -- 'HIGH' or 'LOW'
+    user_id INTEGER,
+    username VARCHAR(100),
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    description TEXT,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
 -- ============================================
 -- CREATE INDEXES FOR PERFORMANCE
 -- ============================================
@@ -195,6 +208,12 @@ CREATE INDEX idx_access_log_user_device ON access_log(user_id, device_id);
 CREATE INDEX idx_attendance_user_id ON attendance(user_id);
 CREATE INDEX idx_attendance_date ON attendance(attendance_date);
 CREATE INDEX idx_attendance_user_date ON attendance(user_id, attendance_date);
+
+-- Indexes for alarm_log
+CREATE INDEX idx_alarm_log_timestamp ON alarm_log(timestamp);
+CREATE INDEX idx_alarm_log_action ON alarm_log(action);
+CREATE INDEX idx_alarm_log_user_id ON alarm_log(user_id);
+CREATE INDEX idx_alarm_log_gpio_pin ON alarm_log(gpio_pin);
 
 -- ============================================
 -- CREATE VIEWS FOR EASY QUERYING
