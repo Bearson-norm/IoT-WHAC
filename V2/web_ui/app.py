@@ -54,6 +54,7 @@ MQTT_SCAN_TOPIC = os.getenv('MQTT_SCAN_TOPIC', 'WHAC/Store001/in')
 MQTT_AUDIO_TOPIC = os.getenv('MQTT_AUDIO_TOPIC', 'WHAC/Store001/audio')
 MQTT_AUDIO_RESPONSE_TOPIC = os.getenv('MQTT_AUDIO_RESPONSE_TOPIC', 'WHAC/Store001/audio_response')
 MQTT_DOOR_STATUS_TOPIC = os.getenv('MQTT_DOOR_STATUS_TOPIC', 'WHAC/Store001/door_status')
+MQTT_GPIO_LOG_TOPIC = os.getenv('MQTT_GPIO_LOG_TOPIC', 'WHAC/Store001/gpio_log')
 
 # Global MQTT client
 mqtt_client = None
@@ -195,7 +196,11 @@ def on_mqtt_connect(client, userdata, flags, rc):
         client.subscribe(MQTT_DOOR_STATUS_TOPIC, qos=1)
         logger.info(f"✅ Web UI subscribed to topic: {MQTT_DOOR_STATUS_TOPIC} (QoS 1)")
         
-        logger.info("🔔 Web UI is now listening for scan notifications, enrollment responses, and door status updates...")
+        # Subscribe to GPIO log updates
+        client.subscribe(MQTT_GPIO_LOG_TOPIC, qos=1)
+        logger.info(f"✅ Web UI subscribed to topic: {MQTT_GPIO_LOG_TOPIC} (QoS 1)")
+        
+        logger.info("🔔 Web UI is now listening for scan notifications, enrollment responses, door status updates, and GPIO logs...")
     else:
         logger.error(f"❌ Web UI MQTT connection failed with code {rc}")
 
@@ -268,6 +273,9 @@ def on_mqtt_message(client, userdata, msg):
         elif msg.topic == MQTT_DOOR_STATUS_TOPIC:
             # Handle door status updates
             handle_door_status_message(payload)
+        elif msg.topic == MQTT_GPIO_LOG_TOPIC:
+            # Handle GPIO log updates
+            handle_gpio_log_message(payload)
         else:
             logger.warning(f"⚠️  Unknown topic: {msg.topic}")
         
@@ -286,16 +294,29 @@ def handle_scan_message(payload):
         device_id = payload.get('device_id')
         status = payload.get('status')  # "Match" or "Not Match"
         
-        # Check if user is registered in user_machine table
-        user_info = check_user_in_user_machine(fingerprint_id, device_id)
-        is_verified = user_info is not None
+        # For "Not Match" with fingerprint_id = 0, treat as unverified scan
+        # This means a fingerprint was scanned but not found in database
+        if status == "Not Match" and (fingerprint_id == 0 or fingerprint_id is None):
+            # This is an unverified scan - no user found
+            user_info = None
+            is_verified = False
+            # Generate a temporary ID for tracking this unverified scan
+            # Use timestamp-based ID to track this specific scan attempt
+            import time
+            temp_scan_id = int(time.time() * 1000) % 1000000  # Use last 6 digits of timestamp
+        else:
+            # Check if user is registered in user_machine table
+            user_info = check_user_in_user_machine(fingerprint_id, device_id)
+            is_verified = user_info is not None
+            temp_scan_id = None
         
         # Process the scan data and log to database
         process_incoming_scan(payload)
         
         # Format scan data for WebSocket with verification status
         scan_data = {
-            'user_id': fingerprint_id,
+            'user_id': fingerprint_id if fingerprint_id and fingerprint_id > 0 else temp_scan_id,
+            'fingerprint_id': fingerprint_id if fingerprint_id and fingerprint_id > 0 else temp_scan_id,
             'status': status,
             'username': user_info.get('nama') if user_info else payload.get('username'),
             'confidence': payload.get('confidence'),
@@ -303,7 +324,8 @@ def handle_scan_message(payload):
             'store_id': payload.get('store_id'),
             'device_id': device_id,
             'is_verified': is_verified,  # New field: apakah user terdaftar
-            'user_info': user_info  # Info user jika terdaftar
+            'user_info': user_info,  # Info user jika terdaftar
+            'is_unverified_scan': status == "Not Match" and (fingerprint_id == 0 or fingerprint_id is None)  # Flag untuk scan tidak terdaftar
         }
         
         logger.info(f"🔄 Formatted scan data for WebSocket: {scan_data}")
@@ -375,9 +397,29 @@ def handle_enrollment_response(payload):
         user_name = data.get('user_name')
         device_id = data.get('device_id', 'AS608_001')  # Default to AS608_001 if not provided
         
+        # Debug logging
+        logger.info(f"🔍 Parsing enrollment response:")
+        logger.info(f"   status: {status}")
+        logger.info(f"   data: {data}")
+        logger.info(f"   fingerprint_id: {fingerprint_id} (type: {type(fingerprint_id)})")
+        logger.info(f"   user_name: {user_name} (type: {type(user_name)})")
+        logger.info(f"   device_id: {device_id}")
+        
         # Find active enrollment for this user
-        active_enrollment = enrollment_manager.get_enrollment_by_user_id(fingerprint_id)
-        enrollment_id = active_enrollment['enrollment_id'] if active_enrollment else None
+        # Try to find by enrollment_id first (from response), then by user_id
+        enrollment_id_from_response = data.get('enrollment_id') or payload.get('enrollment_id')
+        active_enrollment = None
+        
+        if enrollment_id_from_response:
+            active_enrollment = enrollment_manager.get_enrollment_status(enrollment_id_from_response)
+            enrollment_id = enrollment_id_from_response
+        elif fingerprint_id:
+            active_enrollment = enrollment_manager.get_enrollment_by_user_id(fingerprint_id)
+            enrollment_id = active_enrollment['enrollment_id'] if active_enrollment else None
+        else:
+            enrollment_id = None
+        
+        logger.info(f"   Found enrollment: {active_enrollment is not None}, enrollment_id: {enrollment_id}")
         
         # Determine sensor_location based on device_id
         sensor_location = None
@@ -386,7 +428,17 @@ def handle_enrollment_response(payload):
         elif device_id == 'AS608_002':
             sensor_location = 'keluar'
         
-        if status == 'success' and fingerprint_id and user_name:
+        # Check if this is a success response
+        # Allow fingerprint_id to be 0 or None for debugging, but user_name must exist
+        is_success = status == 'success' and user_name
+        
+        logger.info(f"🔍 Enrollment response check:")
+        logger.info(f"   status == 'success': {status == 'success'}")
+        logger.info(f"   user_name exists: {bool(user_name)}")
+        logger.info(f"   fingerprint_id: {fingerprint_id}")
+        logger.info(f"   is_success: {is_success}")
+        
+        if is_success and fingerprint_id:
             # Update enrollment status
             if enrollment_id:
                 enrollment_manager.update_enrollment_status(
@@ -417,11 +469,7 @@ def handle_enrollment_response(payload):
                             updated_at = CURRENT_TIMESTAMP
                     """, (fingerprint_id, user_name, fingerprint_id))
                     
-                    conn.commit()
-                    conn.close()
-                    db_success = True
-                    
-                    logger.info(f"✅ User added to PostgreSQL database: {user_name} (ID: {fingerprint_id}, Device: {device_id}, Location: {sensor_location}, Table: {table_name})")
+                    logger.info(f"✅ User added to {table_name}: {user_name} (ID: {fingerprint_id})")
                     
                     # Also add to user_machine table
                     cursor.execute("""
@@ -432,7 +480,12 @@ def handle_enrollment_response(payload):
                             finger_template_id = EXCLUDED.finger_template_id,
                             updated_at = CURRENT_TIMESTAMP
                     """, (fingerprint_id, user_name, device_id, '', fingerprint_id))
+                    
                     conn.commit()
+                    conn.close()
+                    db_success = True
+                    
+                    logger.info(f"✅ User added to PostgreSQL database: {user_name} (ID: {fingerprint_id}, Device: {device_id}, Location: {sensor_location}, Table: {table_name})")
                     
                 except Exception as db_error:
                     logger.error(f"❌ Error adding user to database: {db_error}")
@@ -483,9 +536,33 @@ def handle_enrollment_response(payload):
             socketio.start_background_task(emit_notification_task, notification_data)
             logger.info("=" * 80)
             
+        elif is_success and not fingerprint_id:
+            # Success but missing fingerprint_id - try to extract from enrollment
+            logger.warning(f"⚠️  Success response but missing fingerprint_id, trying to extract from enrollment...")
+            if active_enrollment:
+                fingerprint_id = active_enrollment.get('user_id')
+                logger.info(f"   Extracted fingerprint_id from enrollment: {fingerprint_id}")
+                # Retry with extracted fingerprint_id
+                if fingerprint_id:
+                    # Recursively call with extracted data
+                    data['fingerprint_id'] = fingerprint_id
+                    handle_enrollment_response(payload)
+                    return
+            else:
+                error_message = "Success response but missing fingerprint_id and no active enrollment found"
+                logger.error(f"❌ {error_message}")
+                notification_data = {
+                    'type': 'enrollment_error',
+                    'message': error_message,
+                    'error': error_message,
+                    'enrollment_id': enrollment_id,
+                    'timestamp': datetime.now().isoformat()
+                }
+                socketio.start_background_task(emit_notification_task, notification_data)
         else:
             error_message = data.get('message', 'Unknown error')
             logger.error(f"❌ Enrollment failed: {error_message}")
+            logger.error(f"   Status: {status}, fingerprint_id: {fingerprint_id}, user_name: {user_name}")
             
             # Update enrollment status to error
             if enrollment_id:
@@ -585,6 +662,123 @@ def handle_door_status_message(payload):
         import traceback
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
+def handle_gpio_log_message(payload):
+    """Handle GPIO log messages from local machine and save to database"""
+    try:
+        logger.info("=" * 80)
+        logger.info("📊 GPIO LOG UPDATE RECEIVED")
+        logger.info(f"   GPIO Pin: {payload.get('gpio_pin')}")
+        logger.info(f"   GPIO State: {payload.get('gpio_state')}")
+        logger.info(f"   Event Type: {payload.get('event_type')}")
+        logger.info(f"   Full payload: {payload}")
+        
+        gpio_pin = payload.get('gpio_pin')
+        gpio_state = payload.get('gpio_state')
+        event_type = payload.get('event_type')
+        user_id = payload.get('user_id')
+        device_id = payload.get('device_id')
+        description = payload.get('description')
+        timestamp = payload.get('timestamp')
+        
+        # Validate required fields
+        if gpio_pin is None or gpio_state is None:
+            logger.error("❌ Missing required fields: gpio_pin or gpio_state")
+            return
+        
+        # Connect to database and save GPIO log
+        conn = get_db_connection()
+        if not conn:
+            logger.error("❌ Failed to connect to database")
+            return
+        
+        try:
+            cursor = conn.cursor()
+            
+            # Check if gpio_log table exists, if not create it
+            cursor.execute("""
+                SELECT EXISTS (
+                    SELECT FROM information_schema.tables 
+                    WHERE table_schema = 'public' 
+                    AND table_name = 'gpio_log'
+                );
+            """)
+            table_exists = cursor.fetchone()[0]
+            
+            if not table_exists:
+                logger.info("📋 Creating gpio_log table...")
+                cursor.execute("""
+                    CREATE TABLE IF NOT EXISTS gpio_log (
+                        id SERIAL PRIMARY KEY,
+                        gpio_pin INTEGER NOT NULL,
+                        gpio_state VARCHAR(10) NOT NULL,
+                        event_type VARCHAR(50),
+                        user_id INTEGER,
+                        device_id VARCHAR(50),
+                        timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                        description TEXT
+                    );
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_gpio_log_timestamp ON gpio_log(timestamp);
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_gpio_log_gpio_pin ON gpio_log(gpio_pin);
+                """)
+                cursor.execute("""
+                    CREATE INDEX IF NOT EXISTS idx_gpio_log_event_type ON gpio_log(event_type);
+                """)
+                conn.commit()
+                logger.info("✅ gpio_log table created successfully")
+            
+            # Insert GPIO log
+            if timestamp:
+                try:
+                    # Parse timestamp if provided
+                    from datetime import datetime
+                    if isinstance(timestamp, str):
+                        # Try to parse ISO format timestamp
+                        try:
+                            parsed_timestamp = datetime.fromisoformat(timestamp.replace('Z', '+00:00'))
+                        except:
+                            parsed_timestamp = datetime.now()
+                    else:
+                        parsed_timestamp = datetime.now()
+                except:
+                    parsed_timestamp = None
+            else:
+                parsed_timestamp = None
+            
+            if parsed_timestamp:
+                cursor.execute("""
+                    INSERT INTO gpio_log (gpio_pin, gpio_state, event_type, user_id, device_id, timestamp, description)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s)
+                """, (gpio_pin, gpio_state, event_type, user_id, device_id, parsed_timestamp, description))
+            else:
+                cursor.execute("""
+                    INSERT INTO gpio_log (gpio_pin, gpio_state, event_type, user_id, device_id, timestamp, description)
+                    VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
+                """, (gpio_pin, gpio_state, event_type, user_id, device_id, description))
+            
+            conn.commit()
+            cursor.close()
+            conn.close()
+            
+            logger.info(f"✅ GPIO log saved: GPIO({gpio_pin}) = {gpio_state} ({event_type})")
+            logger.info("=" * 80)
+            
+        except Exception as db_error:
+            logger.error(f"❌ Database error: {db_error}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
+            if conn:
+                conn.rollback()
+                conn.close()
+        
+    except Exception as e:
+        logger.error(f"❌ Error handling GPIO log message: {e}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+
 def process_incoming_scan(data):
     """Process incoming scan data and log to database"""
     try:
@@ -596,9 +790,15 @@ def process_incoming_scan(data):
         username = data.get('username')
         confidence = data.get('confidence')
         
-        if not all([store_id, timestamp, status, fingerprint_id is not None, device_id]):
+        # For "Not Match" with fingerprint_id = 0, we still want to log it
+        # So we allow None or 0 for fingerprint_id in this case
+        if not all([store_id, timestamp, status, device_id]):
             logger.warning(f"Incomplete scan data: {data}")
             return
+        
+        # Allow fingerprint_id to be None or 0 for unverified scans
+        if fingerprint_id is None and status == "Not Match":
+            fingerprint_id = 0
         
         # Determine sensor location based on device_id
         # AS608_001 = Pintu Masuk, AS608_002 = Pintu Keluar
@@ -620,15 +820,25 @@ def process_incoming_scan(data):
             granted_denied = "pending"  # Waiting for admin decision
         else:
             action = "no_match"
-            granted_denied = "denied"
+            # For "Not Match" with fingerprint_id = 0, this is an unverified scan
+            # Don't mark as denied yet - wait for user decision (enroll or dismiss)
+            if fingerprint_id == 0 or fingerprint_id is None:
+                granted_denied = "pending"  # Wait for user decision
+            else:
+                granted_denied = "denied"
         
         # Use username from payload if available, otherwise get from database
         if not username:
-            user_info = get_user_info_from_fingerprint(fingerprint_id, device_id)
-            username = user_info.get('username') if user_info else None
+            # Only check database if fingerprint_id is valid (> 0)
+            if fingerprint_id and fingerprint_id > 0:
+                user_info = get_user_info_from_fingerprint(fingerprint_id, device_id)
+                username = user_info.get('username') if user_info else None
+            else:
+                username = None  # Unverified scan - no username
         
         # Log to database with device_id and sensor_location
-        log_scan_to_database(store_id, fingerprint_id, scan_time, action, username, granted_denied, device_id, sensor_location)
+        # For unverified scans (fingerprint_id = 0), still log but with pending status
+        log_scan_to_database(store_id, fingerprint_id if fingerprint_id and fingerprint_id > 0 else None, scan_time, action, username, granted_denied, device_id, sensor_location)
         
         logger.info(f"✓ Processed incoming scan: {status} for user {fingerprint_id} ({username}) at {sensor_location or device_id}")
         

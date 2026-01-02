@@ -782,14 +782,24 @@
             document.getElementById('modalTitle').textContent = 'User Tidak Terdaftar';
             
             // Get fingerprint_id from data
+            // For unverified scans (Not Match with ID 0), we need to get next available ID
             const fingerprintId = data.user_id || data.fingerprint_id || null;
             const deviceId = data.device_id || 'AS608_001';
+            const isUnverifiedScan = data.is_unverified_scan === true;
             
-            // Set fingerprint_id in form (hidden field or use user_id field)
-            if (fingerprintId) {
+            // For unverified scans, always get next available ID
+            // The fingerprint template will be created during enrollment on sensor
+            if (isUnverifiedScan || !fingerprintId || fingerprintId === 0) {
+                // This is an unverified scan - get next available user ID
+                document.getElementById('newUserId').readOnly = false;
+                // Will be set below by API call
+            } else {
+                // Set fingerprint_id in form (hidden field or use user_id field)
                 document.getElementById('newUserId').value = fingerprintId;
                 document.getElementById('newUserId').readOnly = true; // Lock user_id if from scan
-            } else {
+            }
+            
+            if (!fingerprintId || fingerprintId === 0 || isUnverifiedScan) {
                 // Try to get next available User ID
                 try {
                     const response = await fetch('/api/next_user_id');
@@ -915,53 +925,89 @@
             console.log('📝 Enrolling new user:', {user_id: userIdInt, nama, posisi, device_id: deviceId, finger_template_id: fingerprintId});
             
             try {
-                // Send enrollment request to server using enroll_user_from_modal endpoint
-                const response = await fetch('/api/enroll_user_from_modal', {
-                    method: 'POST',
-                    headers: {
-                        'Content-Type': 'application/json'
-                    },
-                    body: JSON.stringify({
-                        user_id: userIdInt,
-                        nama: nama,
-                        posisi: posisi,
-                        device_id: deviceId,
-                        finger_template_id: fingerprintId || userIdInt
-                    })
-                });
+                // Check if this is from an unverified scan (needs physical enrollment on sensor)
+                const isUnverifiedScan = currentScanData?.is_unverified_scan === true;
                 
-                const data = await response.json();
-                
-                if (response.ok) {
-                    showNotification(`User ${nama} berhasil didaftarkan!`, 'success');
+                if (isUnverifiedScan) {
+                    // For unverified scans, we need to enroll physically on sensor first
+                    // Send enrollment command to sensor via MQTT
+                    console.log('📝 Sending enrollment command to sensor for unverified scan...');
                     
-                    // Log access as granted (user baru didaftarkan)
-                    if (currentScanData) {
-                        socket.emit('grant_access', {
+                    const enrollmentResponse = await fetch('/api/enroll_user', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
                             user_id: userIdInt,
-                            action: 'access_granted',
+                            username: nama,
+                            target_sensor: deviceId  // Specify which sensor to enroll on
+                        })
+                    });
+                    
+                    const enrollmentData = await enrollmentResponse.json();
+                    
+                    if (enrollmentResponse.ok) {
+                        showNotification(`Enrollment command sent. Please follow instructions on sensor ${deviceId} to complete enrollment.`, 'info');
+                        
+                        // Don't close modal yet - wait for enrollment to complete
+                        // The enrollment response will be handled by enrollment_notification socket event
+                        // Modal will be closed when enrollment is successful
+                    } else {
+                        const errorMsg = enrollmentData.error || 'Gagal mengirim enrollment command ke sensor';
+                        console.error('❌ Enrollment command error:', enrollmentData);
+                        showNotification(`Error: ${errorMsg}`, 'error');
+                    }
+                } else {
+                    // For verified scans or manual enrollment, use enroll_user_from_modal
+                    // This only saves to database without physical enrollment
+                    const response = await fetch('/api/enroll_user_from_modal', {
+                        method: 'POST',
+                        headers: {
+                            'Content-Type': 'application/json'
+                        },
+                        body: JSON.stringify({
+                            user_id: userIdInt,
                             nama: nama,
+                            posisi: posisi,
                             device_id: deviceId,
                             finger_template_id: fingerprintId || userIdInt
-                        });
-                    }
+                        })
+                    });
                     
-                    // Close modal
-                    if (scanModal) {
-                        scanModal.hide();
-                    }
+                    const data = await response.json();
                     
-                    // Refresh user list
-                    setTimeout(() => {
-                        if (typeof loadUsers === 'function') {
-                            loadUsers();
+                    if (response.ok) {
+                        showNotification(`User ${nama} berhasil didaftarkan!`, 'success');
+                        
+                        // Log access as granted (user baru didaftarkan)
+                        if (currentScanData) {
+                            socket.emit('grant_access', {
+                                user_id: userIdInt,
+                                action: 'access_granted',
+                                nama: nama,
+                                device_id: deviceId,
+                                finger_template_id: fingerprintId || userIdInt
+                            });
                         }
-                    }, 1000);
-                } else {
-                    // Show detailed error message
-                    const errorMsg = data.error || 'Gagal mendaftarkan user';
-                    console.error('❌ Enrollment error:', data);
-                    showNotification(`Error: ${errorMsg}`, 'error');
+                        
+                        // Close modal
+                        if (scanModal) {
+                            scanModal.hide();
+                        }
+                        
+                        // Refresh user list
+                        setTimeout(() => {
+                            if (typeof loadUsers === 'function') {
+                                loadUsers();
+                            }
+                        }, 1000);
+                    } else {
+                        // Show detailed error message
+                        const errorMsg = data.error || 'Gagal mendaftarkan user';
+                        console.error('❌ Enrollment error:', data);
+                        showNotification(`Error: ${errorMsg}`, 'error');
+                    }
                 }
             } catch (error) {
                 console.error('❌ Error enrolling user:', error);
