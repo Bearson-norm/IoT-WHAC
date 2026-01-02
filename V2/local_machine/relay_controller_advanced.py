@@ -65,10 +65,14 @@ class AdvancedRelayController:
         # Setup GPIO
         self.setup_gpio()
         
-        # Start monitoring thread for GPIO(2) and GPIO(3)
-        self.monitoring = True
-        self.monitor_thread = threading.Thread(target=self.monitor_gpio_2_and_3, daemon=True)
-        self.monitor_thread.start()
+        # Monitoring thread for GPIO(2) and GPIO(3) is DISABLED
+        # GPIO 25 (output_pin) is now only controlled via alarm commands
+        # self.monitoring = True
+        # self.monitor_thread = threading.Thread(target=self.monitor_gpio_2_and_3, daemon=True)
+        # self.monitor_thread.start()
+        self.monitoring = False
+        self.monitor_thread = None
+        logger.info("ℹ️  GPIO monitoring disabled - GPIO 25 controlled only via alarm commands")
         
         # Setup MQTT
         self.setup_mqtt()
@@ -390,9 +394,9 @@ class AdvancedRelayController:
         try:
             logger.info("Cleaning up advanced relay controller...")
             
-            # Stop monitoring
+            # Stop monitoring (if it was running)
             self.monitoring = False
-            if self.monitor_thread.is_alive():
+            if self.monitor_thread and self.monitor_thread.is_alive():
                 self.monitor_thread.join(timeout=2)
             
             # Turn off all GPIO outputs
@@ -427,7 +431,8 @@ def main():
         logger.info(f"Action Topic: {relay.ACTION_TOPIC}")
         logger.info("=" * 60)
         logger.info("✓ Listening for relay control commands...")
-        logger.info("✓ GPIO monitoring active")
+        logger.info("✓ Listening for alarm control commands...")
+        logger.info("ℹ️  GPIO monitoring disabled - GPIO 25 controlled only via alarm commands")
         logger.info("=" * 60)
         
         # Keep running
