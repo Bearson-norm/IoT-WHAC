@@ -15,7 +15,6 @@ import RPi.GPIO as GPIO
 import time
 import threading
 from datetime import datetime
-import psycopg2
 import os
 
 # Configure logging
@@ -28,8 +27,7 @@ class AdvancedRelayController:
                  input_pin=None,        # GPIO pin for digital input (default: 24)
                  output_pin=None,       # GPIO pin for output control (default: 25)
                  mqtt_broker="103.87.67.139", 
-                 mqtt_port=1883,
-                 db_config=None):
+                 mqtt_port=1883):
         """
         Initialize advanced relay controller
         
@@ -41,7 +39,6 @@ class AdvancedRelayController:
             output_pin: GPIO pin number for output control (default: 25)
             mqtt_broker: MQTT broker IP address
             mqtt_port: MQTT broker port
-            db_config: PostgreSQL database configuration
         """
         # Use environment variables or defaults
         # GPIO 23 untuk relay (GPIO 18 sudah digunakan oleh fingerprint_multi_client.py - relay di fingerprint_multi_client.py sudah dinonaktifkan)
@@ -54,15 +51,6 @@ class AdvancedRelayController:
         self.mqtt_client = None
         self.connected = False
         
-        # Database configuration
-        self.db_config = db_config or {
-            'host': os.getenv('DB_HOST', 'localhost'),
-            'database': os.getenv('DB_NAME', 'whac_master'),
-            'user': os.getenv('DB_USER', 'postgres'),
-            'password': os.getenv('DB_PASSWORD', 'Admin123'),
-            'port': int(os.getenv('DB_PORT', '5432'))
-        }
-        
         # State tracking
         self.gpio_1_active = False
         self.gpio_2_last_state = None
@@ -72,6 +60,7 @@ class AdvancedRelayController:
         self.ACTION_TOPIC = "WHAC/Store001/action"
         self.STATUS_TOPIC = "WHAC/Store001/relay_status"
         self.GPIO_LOG_TOPIC = "WHAC/Store001/gpio_log"
+        self.ALARM_TOPIC = "WHAC/Store001/alarm"
         
         # Setup GPIO
         self.setup_gpio()
@@ -103,12 +92,10 @@ class AdvancedRelayController:
             
             # GPIO(3) - Output control (OUTPUT)
             GPIO.setup(self.output_pin, GPIO.OUT)
-            # Set initial state based on GPIO(2)
-            if self.gpio_2_last_state == GPIO.LOW:
-                GPIO.output(self.output_pin, GPIO.HIGH)
-            else:
-                GPIO.output(self.output_pin, GPIO.LOW)
+            # Set initial state to HIGH (alarm inactive)
+            GPIO.output(self.output_pin, GPIO.HIGH)
             logger.info(f"✓ GPIO({self.output_pin}) setup - Output control (OUTPUT)")
+            logger.info(f"   Initial state: HIGH (alarm inactive)")
             
         except Exception as e:
             logger.error(f"GPIO setup error: {e}")
@@ -207,19 +194,37 @@ class AdvancedRelayController:
         """Handle incoming MQTT action messages"""
         try:
             payload = json.loads(msg.payload.decode())
-            logger.info(f"Received relay command: {payload}")
+            logger.info(f"Received MQTT message on topic {msg.topic}: {payload}")
             
-            command = payload.get('command')
-            user_id = payload.get('user_id')
-            action = payload.get('action')
-            device_id = payload.get('device_id')
+            # Handle alarm commands
+            if msg.topic == self.ALARM_TOPIC:
+                command = payload.get('command')
+                gpio_pin = payload.get('gpio_pin')
+                gpio_state = payload.get('gpio_state')
+                user_id = payload.get('user_id')
+                username = payload.get('username', 'Unknown')
+                
+                if command == 'activate' and gpio_pin == 25:
+                    self.activate_alarm(user_id, username)
+                elif command == 'deactivate' and gpio_pin == 25:
+                    self.deactivate_alarm(user_id, username)
+                else:
+                    logger.warning(f"Unknown alarm command: {command} or invalid GPIO pin: {gpio_pin}")
+                return
             
-            if command == 'grant':
-                self.grant_access(user_id, action, device_id)
-            elif command == 'deny':
-                self.deny_access(user_id, action, device_id)
-            else:
-                logger.warning(f"Unknown command: {command}")
+            # Handle relay action commands
+            if msg.topic == self.ACTION_TOPIC:
+                command = payload.get('command')
+                user_id = payload.get('user_id')
+                action = payload.get('action')
+                device_id = payload.get('device_id')
+                
+                if command == 'grant':
+                    self.grant_access(user_id, action, device_id)
+                elif command == 'deny':
+                    self.deny_access(user_id, action, device_id)
+                else:
+                    logger.warning(f"Unknown command: {command}")
                 
         except Exception as e:
             logger.error(f"Error processing MQTT message: {e}")
@@ -280,25 +285,74 @@ class AdvancedRelayController:
         except Exception as e:
             logger.error(f"Error denying access: {e}")
     
-    def log_gpio_status(self, gpio_pin, gpio_state, event_type, description, user_id=None, device_id=None):
-        """Log GPIO status to database"""
+    def activate_alarm(self, user_id, username):
+        """Activate alarm by setting GPIO 25 to LOW"""
         try:
-            conn = psycopg2.connect(**self.db_config)
-            cursor = conn.cursor()
+            logger.info(f"Activating alarm for user {user_id} ({username})")
             
-            cursor.execute("""
-                INSERT INTO gpio_log (gpio_pin, gpio_state, event_type, user_id, device_id, timestamp, description)
-                VALUES (%s, %s, %s, %s, %s, CURRENT_TIMESTAMP, %s)
-            """, (gpio_pin, gpio_state, event_type, user_id, device_id, description))
+            # Set GPIO 25 to LOW (alarm active)
+            GPIO.output(self.output_pin, GPIO.LOW)
+            logger.info(f"✓ GPIO({self.output_pin}) set to LOW (alarm activated)")
             
-            conn.commit()
-            cursor.close()
-            conn.close()
+            # Log GPIO 25 LOW
+            self.log_gpio_status(self.output_pin, 'LOW', 'alarm_control',
+                               f'Alarm activated by {username}', user_id, None)
             
-            logger.info(f"✓ GPIO log saved: GPIO({gpio_pin}) = {gpio_state} ({event_type})")
+            logger.info(f"✓ Alarm activated for user {user_id} ({username})")
             
         except Exception as e:
-            logger.error(f"Error logging GPIO status: {e}")
+            logger.error(f"Error activating alarm: {e}")
+    
+    def deactivate_alarm(self, user_id, username):
+        """Deactivate alarm by setting GPIO 25 to HIGH"""
+        try:
+            logger.info(f"Deactivating alarm for user {user_id} ({username})")
+            
+            # Set GPIO 25 to HIGH (alarm inactive)
+            GPIO.output(self.output_pin, GPIO.HIGH)
+            logger.info(f"✓ GPIO({self.output_pin}) set to HIGH (alarm deactivated)")
+            
+            # Log GPIO 25 HIGH
+            self.log_gpio_status(self.output_pin, 'HIGH', 'alarm_control',
+                               f'Alarm deactivated by {username}', user_id, None)
+            
+            logger.info(f"✓ Alarm deactivated for user {user_id} ({username})")
+            
+        except Exception as e:
+            logger.error(f"Error deactivating alarm: {e}")
+    
+    def log_gpio_status(self, gpio_pin, gpio_state, event_type, description, user_id=None, device_id=None):
+        """Log GPIO status via MQTT to web-ui (which saves to database)"""
+        try:
+            if not self.connected:
+                logger.warning("MQTT not connected, cannot send GPIO log")
+                return False
+            
+            # Prepare payload for GPIO log
+            payload = {
+                'gpio_pin': gpio_pin,
+                'gpio_state': gpio_state,
+                'event_type': event_type,
+                'user_id': user_id,
+                'device_id': device_id,
+                'description': description,
+                'timestamp': datetime.now().isoformat(),
+                'source': 'relay_controller'
+            }
+            
+            # Publish to GPIO log topic
+            result = self.mqtt_client.publish(self.GPIO_LOG_TOPIC, json.dumps(payload), qos=1)
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"✓ GPIO log sent via MQTT: GPIO({gpio_pin}) = {gpio_state} ({event_type})")
+                return True
+            else:
+                logger.error(f"✗ Failed to send GPIO log via MQTT (rc: {result.rc})")
+                return False
+            
+        except Exception as e:
+            logger.error(f"Error sending GPIO log via MQTT: {e}")
+            return False
     
     def send_status_update(self, status, user_id, action, device_id):
         """Send relay status update via MQTT"""

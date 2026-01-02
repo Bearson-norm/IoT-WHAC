@@ -840,19 +840,34 @@ class MultiSensorFingerprintClient:
         1. Target sensor selection (if 'target_sensor' specified)
         2. Smart enrollment (enroll to sensor that doesn't have this fingerprint ID yet)
         3. Re-enrollment (allow updating existing fingerprint)
+        4. Progress updates during enrollment
         """
         try:
             # Extract command data - using 'user_name' to match Web UI
             fingerprint_id = payload.get('fingerprint_id')
             user_name = payload.get('user_name')
             target_sensor = payload.get('target_sensor')  # Optional: specific sensor to enroll
+            enrollment_id = payload.get('enrollment_id')  # Optional: enrollment tracking ID
             
             if not fingerprint_id or not user_name:
                 logger.error(f"Missing required fields: fingerprint_id={fingerprint_id}, user_name={user_name}")
                 self.send_command_response("add_user", "error", {
-                    "message": "Missing fingerprint_id or user_name in add user command"
+                    "message": "Missing fingerprint_id or user_name in add user command",
+                    "fingerprint_id": fingerprint_id,
+                    "enrollment_id": enrollment_id
                 })
                 return
+            
+            # Send progress update: enrollment started
+            if enrollment_id:
+                self.send_command_response("add_user", "progress", {
+                    "enrollment_id": enrollment_id,
+                    "fingerprint_id": fingerprint_id,
+                    "user_name": user_name,
+                    "progress": 30,
+                    "progress_message": "Enrollment started, checking sensors...",
+                    "status": "in_progress"
+                })
             
             # Check which sensors already have this fingerprint ID
             enrolled_sensors = self.check_fingerprint_enrollment(fingerprint_id)
@@ -911,6 +926,18 @@ class MultiSensorFingerprintClient:
                         with sensor.lock:
                             logger.info(f"[{sensor.device_id}] Starting enrollment for {user_name}...")
                             
+                            # Send progress update: starting enrollment
+                            if enrollment_id:
+                                self.send_command_response("add_user", "progress", {
+                                    "enrollment_id": enrollment_id,
+                                    "fingerprint_id": fingerprint_id,
+                                    "user_name": user_name,
+                                    "device_id": sensor.device_id,
+                                    "progress": 40,
+                                    "progress_message": f"Starting enrollment on {sensor.device_id}...",
+                                    "status": "in_progress"
+                                })
+                            
                             # Enroll fingerprint
                             if self.enroll_fingerprint_on_sensor(sensor, fingerprint_id):
                                 # Save to database
@@ -924,11 +951,36 @@ class MultiSensorFingerprintClient:
                                 conn.close()
                                 
                                 logger.info(f"[{sensor.device_id}] ✓ User enrolled successfully: {user_name} (ID: {fingerprint_id})")
+                                
+                                # Send progress update: enrollment successful
+                                if enrollment_id:
+                                    self.send_command_response("add_user", "progress", {
+                                        "enrollment_id": enrollment_id,
+                                        "fingerprint_id": fingerprint_id,
+                                        "user_name": user_name,
+                                        "device_id": sensor.device_id,
+                                        "progress": 80,
+                                        "progress_message": f"Fingerprint enrolled successfully on {sensor.device_id}, saving to database...",
+                                        "status": "in_progress"
+                                    })
+                                
                                 enrollment_success = True
                                 enrolled_sensor = sensor.device_id
                                 break
                             else:
                                 logger.error(f"[{sensor.device_id}] ✗ Failed to enroll fingerprint")
+                                
+                                # Send progress update: enrollment failed
+                                if enrollment_id:
+                                    self.send_command_response("add_user", "progress", {
+                                        "enrollment_id": enrollment_id,
+                                        "fingerprint_id": fingerprint_id,
+                                        "user_name": user_name,
+                                        "device_id": sensor.device_id,
+                                        "progress": 0,
+                                        "progress_message": f"Failed to enroll on {sensor.device_id}",
+                                        "status": "error"
+                                    })
                                 
                     except Exception as e:
                         logger.error(f"[{sensor.device_id}] Enrollment error: {e}")
@@ -950,14 +1002,22 @@ class MultiSensorFingerprintClient:
                         "device_id": enrolled_sensor,
                         "enrolled_sensors": updated_enrolled,
                         "remaining_sensors": remaining_sensors,
-                        "message": response_message
+                        "message": response_message,
+                        "enrollment_id": enrollment_id,
+                        "progress": 100,
+                        "progress_message": "Enrollment completed successfully"
                     })
                     logger.info(f"✅ Enrollment completed successfully on {enrolled_sensor}")
                     if remaining_sensors:
                         logger.info(f"ℹ️  Remaining sensors for enrollment: {', '.join(remaining_sensors)}")
                 else:
                     self.send_command_response("add_user", "error", {
-                        "message": "Failed to enroll fingerprint on any sensor"
+                        "message": "Failed to enroll fingerprint on any sensor",
+                        "fingerprint_id": fingerprint_id,
+                        "user_name": user_name,
+                        "enrollment_id": enrollment_id,
+                        "progress": 0,
+                        "progress_message": "Enrollment failed on all sensors"
                     })
                     logger.error(f"❌ Enrollment failed on all sensors")
                     
@@ -969,8 +1029,17 @@ class MultiSensorFingerprintClient:
         except Exception as e:
             logger.error(f"Error in handle_add_user: {e}")
             self.enrolling = False  # Ensure flag is reset on error
+            
+            # Get enrollment_id from payload if available
+            enrollment_id = payload.get('enrollment_id') if 'payload' in locals() else None
+            
             self.send_command_response("add_user", "error", {
-                "message": f"Error: {str(e)}"
+                "message": f"Error: {str(e)}",
+                "fingerprint_id": payload.get('fingerprint_id') if 'payload' in locals() else None,
+                "user_name": payload.get('user_name') if 'payload' in locals() else None,
+                "enrollment_id": enrollment_id,
+                "progress": 0,
+                "progress_message": f"Error occurred: {str(e)}"
             })
     
     def check_fingerprint_enrollment(self, fingerprint_id):
@@ -1169,6 +1238,9 @@ class MultiSensorFingerprintClient:
     def send_command_response(self, command_type, status, data):
         """Send command response back to MQTT"""
         try:
+            # Include enrollment_id if present in data
+            enrollment_id = data.get('enrollment_id') if isinstance(data, dict) else None
+            
             response = {
                 "store_id": STORE_ID,
                 "timestamp": datetime.now().isoformat(),
@@ -1177,6 +1249,10 @@ class MultiSensorFingerprintClient:
                 "data": data,
                 "device_id": "MULTI_SENSOR"
             }
+            
+            # Include enrollment_id in response if available
+            if enrollment_id:
+                response["enrollment_id"] = enrollment_id
             
             response_topic = f"WHAC/Store001/{command_type}_response"
             payload = json.dumps(response)
