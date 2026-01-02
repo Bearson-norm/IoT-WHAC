@@ -53,15 +53,13 @@ def check_config_txt():
     
     if not uart_overlays:
         print("⚠️  Tidak ada dtoverlay=uart* ditemukan di config.txt")
-        print("   Pastikan Anda sudah menambahkan:")
-        print("   dtoverlay=uart1")
-        print("   dtoverlay=uart2")
-        print("   dtoverlay=uart3")
-        print("   dtoverlay=uart4")
-        print("   dtoverlay=uart5")
-        return False
+        print("   Namun, port UART mungkin sudah aktif melalui konfigurasi lain")
+        print("   atau sudah dikonfigurasi sebelumnya.")
+        print("   Cek bagian 'AVAILABLE SERIAL PORTS' di bawah untuk verifikasi.")
+        # Don't return False - ports might still be available
+    else:
+        print(f"\n✓ Found {len(uart_overlays)} UART overlay(s)")
     
-    print(f"\n✓ Found {len(uart_overlays)} UART overlay(s)")
     return True
 
 def check_loaded_overlays():
@@ -175,6 +173,15 @@ def check_uart_mapping():
         print(f"  {status} {uart} -> {', '.join(devices)}")
         if found_devices:
             print(f"      Found: {', '.join(found_devices)}")
+    
+    # Additional check: show actual ttyAMA devices
+    print("\n   Actual ttyAMA devices found:")
+    ttyama_devices = sorted([d for d in glob.glob('/dev/ttyAMA*') if os.path.exists(d)])
+    if ttyama_devices:
+        for dev in ttyama_devices:
+            print(f"      ✓ {dev}")
+    else:
+        print("      ❌ No ttyAMA devices found")
 
 def check_serial_console():
     """Check if serial console is enabled (can conflict with UART)"""
