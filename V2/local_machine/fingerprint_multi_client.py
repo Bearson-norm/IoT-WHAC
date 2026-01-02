@@ -274,43 +274,45 @@ class MultiSensorFingerprintClient:
             logger.error("❌ No sensors configured!")
             raise ValueError("No sensors configured")
     
-    def find_alternative_ttyama_ports(self, exclude_ports=None):
+    def find_alternative_ttyama_ports(self, exclude_ports=None, start_from=None):
         """Find available ttyAMA ports as alternatives
         
         Args:
             exclude_ports: List of ports to exclude (already in use)
+            start_from: Port to start checking from (e.g., '/dev/ttyAMA1')
+                       If None, starts from ttyAMA1
             
         Returns:
-            List of available ttyAMA ports sorted by preference
+            List of available ttyAMA ports sorted by preference (ttyAMA1, ttyAMA2, ttyAMA3, ...)
         """
         if exclude_ports is None:
             exclude_ports = []
         
-        # Get all ttyAMA ports
-        ttyama_ports = sorted(glob.glob('/dev/ttyAMA*'))
+        # Define order: try ttyAMA1, ttyAMA2, ttyAMA3, ttyAMA4, ttyAMA5 in sequence
+        # This ensures we try ports in order starting from ttyAMA1
+        preferred_order = ['/dev/ttyAMA1', '/dev/ttyAMA2', '/dev/ttyAMA3', '/dev/ttyAMA4', '/dev/ttyAMA5', '/dev/ttyAMA0']
         
-        # Filter out excluded ports and non-existent ports
+        # If start_from is specified, start from that port
+        if start_from and start_from in preferred_order:
+            start_idx = preferred_order.index(start_from)
+            preferred_order = preferred_order[start_idx:] + preferred_order[:start_idx]
+        
+        # Get all existing ttyAMA ports
+        existing_ports = sorted(glob.glob('/dev/ttyAMA*'))
+        
+        # Filter and sort by preferred order
         available_ports = []
-        for port in ttyama_ports:
-            if port not in exclude_ports and os.path.exists(port):
+        for preferred in preferred_order:
+            # Check if port exists and is not excluded
+            if preferred in existing_ports and preferred not in exclude_ports:
+                available_ports.append(preferred)
+        
+        # Add any remaining ports that weren't in preferred order
+        for port in existing_ports:
+            if port not in available_ports and port not in exclude_ports:
                 available_ports.append(port)
         
-        # Prefer ttyAMA2, ttyAMA3, ttyAMA4, ttyAMA5 (uart3-5)
-        # These are typically used for additional sensors
-        preferred_order = ['/dev/ttyAMA2', '/dev/ttyAMA3', '/dev/ttyAMA4', '/dev/ttyAMA5', '/dev/ttyAMA1', '/dev/ttyAMA0']
-        
-        # Sort by preference
-        sorted_ports = []
-        for preferred in preferred_order:
-            if preferred in available_ports:
-                sorted_ports.append(preferred)
-        
-        # Add any remaining ports
-        for port in available_ports:
-            if port not in sorted_ports:
-                sorted_ports.append(port)
-        
-        return sorted_ports
+        return available_ports
     
     def auto_detect_fingerprint_port(self, device_id, prefer_ttyama=False):
         """Auto-detect AS608 fingerprint sensor port for a specific device
@@ -567,16 +569,21 @@ class MultiSensorFingerprintClient:
                 # Check if this is a ttyAMA port that failed
                 if 'ttyAMA' in sensor.port:
                     logger.info(f"[{sensor.device_id}] 🔍 Looking for alternative ttyAMA ports...")
+                    logger.info(f"[{sensor.device_id}] Will try ttyAMA ports in order: ttyAMA1, ttyAMA2, ttyAMA3, ttyAMA4, ttyAMA5")
                     
-                    # Find alternative ttyAMA ports
-                    alternative_ports = self.find_alternative_ttyama_ports(exclude_ports=connected_ports)
+                    # Find alternative ttyAMA ports starting from ttyAMA1
+                    # This ensures we try all ttyAMA ports sequentially
+                    alternative_ports = self.find_alternative_ttyama_ports(
+                        exclude_ports=connected_ports,
+                        start_from='/dev/ttyAMA1'  # Start from ttyAMA1
+                    )
                     
                     if alternative_ports:
                         logger.info(f"[{sensor.device_id}] Found {len(alternative_ports)} alternative ttyAMA port(s): {alternative_ports}")
                         
-                        # Try each alternative port
-                        for alt_port in alternative_ports:
-                            logger.info(f"[{sensor.device_id}] Trying alternative port: {alt_port}")
+                        # Try each alternative port sequentially
+                        for idx, alt_port in enumerate(alternative_ports, 1):
+                            logger.info(f"[{sensor.device_id}] [{idx}/{len(alternative_ports)}] Trying alternative port: {alt_port}")
                             
                             # Release lock on original port if exists
                             if sensor.port_lock_file:
@@ -589,15 +596,20 @@ class MultiSensorFingerprintClient:
                             try:
                                 if sensor.connect():
                                     logger.info(f"[{sensor.device_id}] ✅ Successfully connected to alternative port {alt_port}!")
+                                    logger.info(f"[{sensor.device_id}] Port changed from {original_port} to {alt_port}")
                                     connected_count += 1
                                     connected_ports.append(alt_port)
                                     break  # Success, no need to try other alternatives
                                 else:
-                                    logger.warning(f"[{sensor.device_id}] Failed to connect to {alt_port}")
-                                    sensor.port = original_port  # Restore original port
+                                    logger.warning(f"[{sensor.device_id}] ❌ Failed to connect to {alt_port}, trying next port...")
+                                    sensor.port = original_port  # Restore original port for next attempt
                             except Exception as e:
-                                logger.warning(f"[{sensor.device_id}] Error connecting to {alt_port}: {e}")
-                                sensor.port = original_port  # Restore original port
+                                logger.warning(f"[{sensor.device_id}] ❌ Error connecting to {alt_port}: {e}, trying next port...")
+                                sensor.port = original_port  # Restore original port for next attempt
+                        
+                        # If all ttyAMA alternatives failed, log summary
+                        if not sensor.connected:
+                            logger.warning(f"[{sensor.device_id}] ⚠️  All {len(alternative_ports)} ttyAMA alternative ports failed")
                         else:
                             # All alternatives failed, try general auto-detection
                             logger.info(f"[{sensor.device_id}] All ttyAMA alternatives failed, trying general auto-detection...")
