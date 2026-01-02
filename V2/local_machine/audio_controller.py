@@ -49,13 +49,14 @@ class AudioController:
         self.stop_event = threading.Event()
         
         # Initialize pygame mixer if available
-        if PYGAME_AVAILABLE:
+        self.pygame_available = PYGAME_AVAILABLE
+        if self.pygame_available:
             try:
                 pygame.mixer.init(frequency=22050, size=-16, channels=2, buffer=512)
                 logger.info("✅ Pygame mixer initialized")
             except Exception as e:
                 logger.error(f"❌ Failed to initialize pygame mixer: {e}")
-                PYGAME_AVAILABLE = False
+                self.pygame_available = False
         
         # Initialize TTS engine if available
         self.tts_engine = None
@@ -149,7 +150,7 @@ class AudioController:
     
     def _play_file(self, filename):
         """Play audio file"""
-        if not PYGAME_AVAILABLE:
+        if not self.pygame_available:
             logger.warning("⚠️  pygame not available, cannot play audio file")
             return False
         
@@ -216,7 +217,7 @@ class AudioController:
         audio_file = "self_inspection.mp3"
         filepath = os.path.join(self.audio_dir, audio_file)
         
-        if os.path.exists(filepath) and PYGAME_AVAILABLE:
+        if os.path.exists(filepath) and self.pygame_available:
             logger.info(f"🎵 Playing audio file: {audio_file}")
             return self._play_file(audio_file)
         
@@ -329,7 +330,7 @@ class AudioController:
         logger.info("🛑 Stopping audio playback")
         
         # Stop pygame mixer
-        if PYGAME_AVAILABLE:
+        if self.pygame_available:
             try:
                 pygame.mixer.music.stop()
             except:
@@ -364,7 +365,7 @@ class AudioController:
         logger.info("🧹 Cleaning up audio controller")
         self.stop()
         
-        if PYGAME_AVAILABLE:
+        if self.pygame_available:
             try:
                 pygame.mixer.quit()
             except:

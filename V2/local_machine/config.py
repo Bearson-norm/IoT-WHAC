@@ -35,10 +35,11 @@ FINGERPRINT_PORT = os.getenv("FINGERPRINT_PORT", "/dev/serial0")  # Raspberry Pi
 #   dtoverlay=uart3,pins_4_5  # This creates /dev/ttyAMA2
 #   dtoverlay=uart4,pins_8_9  # This creates /dev/ttyAMA3
 #
-# Default: Use 2 sensors - /dev/ttyAMA2 (uart3) and /dev/ttyAMA3 (uart4)
-# Note: /dev/serial0 might point to ttyS0 (mini UART) instead of ttyAMA0
+# Default: Use serial0 (sensor yang sudah terhubung via RX/TX)
+# Untuk multi-sensor, bisa tambahkan port lain: "/dev/serial0,/dev/ttyAMA2"
+# Note: /dev/serial0 biasanya menunjuk ke ttyS0 (mini UART) atau ttyAMA0 (PL011 UART)
 # To use single sensor, set FINGERPRINT_PORTS="" in environment variable
-env_ports = os.getenv("FINGERPRINT_PORTS", "/dev/ttyAMA2,/dev/ttyAMA3")
+env_ports = os.getenv("FINGERPRINT_PORTS", "/dev/serial0")
 if env_ports.strip() == "":
     # If explicitly set to empty string, use single sensor mode
     FINGERPRINT_PORTS = []
