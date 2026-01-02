@@ -22,9 +22,11 @@ DROP TABLE IF EXISTS user_sessions CASCADE;
 DROP TABLE IF EXISTS store_001 CASCADE;
 DROP TABLE IF EXISTS log_data CASCADE;
 DROP TABLE IF EXISTS log_action CASCADE;
+DROP TABLE IF EXISTS access_log CASCADE;
 DROP TABLE IF EXISTS attendance CASCADE;
 DROP TABLE IF EXISTS user_sensor_1 CASCADE;
 DROP TABLE IF EXISTS user_sensor_2 CASCADE;
+DROP TABLE IF EXISTS user_machine CASCADE;
 DROP TABLE IF EXISTS web_users CASCADE;
 
 -- ============================================
@@ -78,7 +80,20 @@ CREATE TABLE user_sensor_2 (
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 5. Log Data (fingerprint scan logs)
+-- 5. User Machine (unified table for user enrollment from modal)
+CREATE TABLE user_machine (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER NOT NULL,
+    nama VARCHAR(100) NOT NULL,
+    device_id VARCHAR(50) NOT NULL,
+    posisi VARCHAR(50),
+    finger_template_id INTEGER NOT NULL,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    UNIQUE(user_id, device_id)
+);
+
+-- 6. Log Data (fingerprint scan logs)
 CREATE TABLE log_data (
     id SERIAL PRIMARY KEY,
     user_id INTEGER,
@@ -90,7 +105,7 @@ CREATE TABLE log_data (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 6. Log Action (access granted/denied logs)
+-- 7. Log Action (access granted/denied logs)
 CREATE TABLE log_action (
     id SERIAL PRIMARY KEY,
     user_id INTEGER,
@@ -104,7 +119,20 @@ CREATE TABLE log_action (
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 
--- 7. Attendance (attendance tracking)
+-- 8. Access Log (access granted/denied logs from modal)
+CREATE TABLE access_log (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER,
+    nama VARCHAR(100),
+    device_id VARCHAR(50) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    action_source VARCHAR(50) DEFAULT 'modal',
+    finger_template_id INTEGER,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- 9. Attendance (attendance tracking)
 CREATE TABLE attendance (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL,
@@ -136,6 +164,12 @@ CREATE INDEX idx_user_sensor_1_finger_template_id ON user_sensor_1(finger_templa
 CREATE INDEX idx_user_sensor_2_user_id ON user_sensor_2(user_id);
 CREATE INDEX idx_user_sensor_2_finger_template_id ON user_sensor_2(finger_template_id);
 
+-- Indexes for user_machine
+CREATE INDEX idx_user_machine_user_id ON user_machine(user_id);
+CREATE INDEX idx_user_machine_device_id ON user_machine(device_id);
+CREATE INDEX idx_user_machine_user_device ON user_machine(user_id, device_id);
+CREATE INDEX idx_user_machine_finger_template_id ON user_machine(finger_template_id);
+
 -- Indexes for log_data
 CREATE INDEX idx_log_data_timestamp ON log_data(timestamp);
 CREATE INDEX idx_log_data_store_id ON log_data(store_id);
@@ -149,6 +183,13 @@ CREATE INDEX idx_log_action_store_id ON log_action(store_id);
 CREATE INDEX idx_log_action_user_id ON log_action(user_id);
 CREATE INDEX idx_log_action_device_id ON log_action(device_id);
 CREATE INDEX idx_log_action_sensor_location ON log_action(sensor_location);
+
+-- Indexes for access_log
+CREATE INDEX idx_access_log_user_id ON access_log(user_id);
+CREATE INDEX idx_access_log_device_id ON access_log(device_id);
+CREATE INDEX idx_access_log_status ON access_log(status);
+CREATE INDEX idx_access_log_timestamp ON access_log(timestamp);
+CREATE INDEX idx_access_log_user_device ON access_log(user_id, device_id);
 
 -- Indexes for attendance
 CREATE INDEX idx_attendance_user_id ON attendance(user_id);
@@ -247,10 +288,10 @@ ORDER BY a.attendance_date DESC, a.user_id;
 -- INSERT DEFAULT DATA
 -- ============================================
 
--- Insert default admin user (password: admin123)
--- Password hash for 'admin123' using bcrypt (verified working)
+-- Insert default admin user (password: Admin123)
+-- Password hash for 'Admin123' using bcrypt (verified working)
 INSERT INTO web_users (username, password_hash, full_name, email, role, is_active, login_attempts, locked_until) VALUES 
-('admin', '$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS', 'System Administrator', 'admin@whac.com', 'admin', TRUE, 0, NULL)
+('admin', '$2b$12$CSTFKuIf6vyTKPu5PifqVOJs14ULspN8ZuGUdu5yEgFpPh6y9X7me', 'System Administrator', 'admin@whac.com', 'admin', TRUE, 0, NULL)
 ON CONFLICT (username) DO UPDATE SET 
     password_hash = EXCLUDED.password_hash,
     full_name = EXCLUDED.full_name,

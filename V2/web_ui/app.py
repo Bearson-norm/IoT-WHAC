@@ -19,6 +19,7 @@ import bcrypt
 import secrets
 import hashlib
 import os
+from enrollment_manager import enrollment_manager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -259,8 +260,11 @@ def on_mqtt_message(client, userdata, msg):
             # Handle scan notifications
             handle_scan_message(payload)
         elif msg.topic == "WHAC/Store001/add_user_response":
-            # Handle enrollment responses
-            handle_enrollment_response(payload)
+            # Handle enrollment responses (both success/error and progress)
+            if payload.get('status') == 'progress':
+                handle_enrollment_progress(payload)
+            else:
+                handle_enrollment_response(payload)
         elif msg.topic == MQTT_DOOR_STATUS_TOPIC:
             # Handle door status updates
             handle_door_status_message(payload)
@@ -316,6 +320,42 @@ def handle_scan_message(payload):
         import traceback
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
+def handle_enrollment_progress(payload):
+    """Handle enrollment progress updates from local machine"""
+    try:
+        data = payload.get('data', {})
+        enrollment_id = data.get('enrollment_id') or payload.get('enrollment_id')
+        progress = data.get('progress', 0)
+        progress_message = data.get('progress_message', '')
+        status = data.get('status', 'in_progress')
+        
+        if enrollment_id:
+            enrollment_manager.update_enrollment_status(
+                enrollment_id,
+                status,
+                progress=progress,
+                progress_message=progress_message,
+                device_id=data.get('device_id')
+            )
+            
+            logger.info(f"📊 Enrollment progress: {enrollment_id} - {progress}% - {progress_message}")
+            
+            # Emit progress update to WebSocket
+            notification_data = {
+                'type': 'enrollment_progress',
+                'enrollment_id': enrollment_id,
+                'progress': progress,
+                'progress_message': progress_message,
+                'status': status,
+                'device_id': data.get('device_id'),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            socketio.start_background_task(emit_notification_task, notification_data)
+        
+    except Exception as e:
+        logger.error(f"Error handling enrollment progress: {e}")
+
 def handle_enrollment_response(payload):
     """Handle enrollment response from local machine
     
@@ -335,6 +375,10 @@ def handle_enrollment_response(payload):
         user_name = data.get('user_name')
         device_id = data.get('device_id', 'AS608_001')  # Default to AS608_001 if not provided
         
+        # Find active enrollment for this user
+        active_enrollment = enrollment_manager.get_enrollment_by_user_id(fingerprint_id)
+        enrollment_id = active_enrollment['enrollment_id'] if active_enrollment else None
+        
         # Determine sensor_location based on device_id
         sensor_location = None
         if device_id == 'AS608_001':
@@ -343,6 +387,16 @@ def handle_enrollment_response(payload):
             sensor_location = 'keluar'
         
         if status == 'success' and fingerprint_id and user_name:
+            # Update enrollment status
+            if enrollment_id:
+                enrollment_manager.update_enrollment_status(
+                    enrollment_id,
+                    'in_progress',
+                    device_id=device_id,
+                    sensor_location=sensor_location,
+                    progress=50,
+                    progress_message='Enrollment successful, saving to database...'
+                )
             # Add user to PostgreSQL database with device_id support
             conn = get_db_connection()
             db_success = False
@@ -369,6 +423,17 @@ def handle_enrollment_response(payload):
                     
                     logger.info(f"✅ User added to PostgreSQL database: {user_name} (ID: {fingerprint_id}, Device: {device_id}, Location: {sensor_location}, Table: {table_name})")
                     
+                    # Also add to user_machine table
+                    cursor.execute("""
+                        INSERT INTO user_machine (user_id, nama, device_id, posisi, finger_template_id)
+                        VALUES (%s, %s, %s, %s, %s)
+                        ON CONFLICT (user_id, device_id) DO UPDATE SET
+                            nama = EXCLUDED.nama,
+                            finger_template_id = EXCLUDED.finger_template_id,
+                            updated_at = CURRENT_TIMESTAMP
+                    """, (fingerprint_id, user_name, device_id, '', fingerprint_id))
+                    conn.commit()
+                    
                 except Exception as db_error:
                     logger.error(f"❌ Error adding user to database: {db_error}")
                     db_error_msg = str(db_error)
@@ -377,6 +442,18 @@ def handle_enrollment_response(payload):
             else:
                 logger.error("❌ Failed to connect to database")
                 db_error_msg = "Database connection failed"
+            
+            # Update enrollment status to success
+            if enrollment_id:
+                enrollment_manager.complete_enrollment(
+                    enrollment_id,
+                    success=db_success,
+                    device_id=device_id,
+                    sensor_location=sensor_location,
+                    progress=100 if db_success else 50,
+                    progress_message='Enrollment completed' if db_success else f'Database error: {db_error_msg}',
+                    error_message=None if db_success else db_error_msg
+                )
             
             # Emit success notification to web UI (even if DB failed, enrollment was successful)
             if db_success:
@@ -410,11 +487,23 @@ def handle_enrollment_response(payload):
             error_message = data.get('message', 'Unknown error')
             logger.error(f"❌ Enrollment failed: {error_message}")
             
+            # Update enrollment status to error
+            if enrollment_id:
+                enrollment_manager.complete_enrollment(
+                    enrollment_id,
+                    success=False,
+                    error_message=error_message,
+                    progress_message=f'Enrollment failed: {error_message}'
+                )
+            
             # Emit error notification to web UI
             notification_data = {
                 'type': 'enrollment_error',
                 'message': f'Enrollment failed: {error_message}',
                 'error': error_message,
+                'enrollment_id': enrollment_id,
+                'user_id': fingerprint_id,
+                'username': user_name,
                 'timestamp': datetime.now().isoformat()
             }
             
@@ -588,7 +677,7 @@ def check_user_in_user_machine(fingerprint_id, device_id):
 
 def get_user_info_from_fingerprint(fingerprint_id, device_id=None):
     """Get user information from fingerprint ID
-    Checks both sensor tables if device_id is not provided
+    Checks user_machine table first, then sensor tables if device_id is not provided
     """
     try:
         conn = get_db_connection()
@@ -598,21 +687,40 @@ def get_user_info_from_fingerprint(fingerprint_id, device_id=None):
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         if device_id:
-            # Check specific sensor table
-            table_name = get_sensor_table_name(device_id)
-            cursor.execute(f"""
-                SELECT username FROM {table_name} WHERE user_id = %s LIMIT 1
-            """, (fingerprint_id,))
-        else:
-            # Check both sensor tables
+            # Check user_machine table first (new unified table)
             cursor.execute("""
-                SELECT username FROM user_sensor_1 WHERE user_id = %s
-                UNION
-                SELECT username FROM user_sensor_2 WHERE user_id = %s
+                SELECT nama as username FROM user_machine 
+                WHERE user_id = %s AND device_id = %s 
                 LIMIT 1
-            """, (fingerprint_id, fingerprint_id))
+            """, (fingerprint_id, device_id))
+            result = cursor.fetchone()
+            
+            if not result:
+                # Fallback to sensor table
+                table_name = get_sensor_table_name(device_id)
+                cursor.execute(f"""
+                    SELECT username FROM {table_name} WHERE user_id = %s LIMIT 1
+                """, (fingerprint_id,))
+                result = cursor.fetchone()
+        else:
+            # Check user_machine table first
+            cursor.execute("""
+                SELECT nama as username FROM user_machine 
+                WHERE user_id = %s 
+                LIMIT 1
+            """, (fingerprint_id,))
+            result = cursor.fetchone()
+            
+            if not result:
+                # Fallback to both sensor tables
+                cursor.execute("""
+                    SELECT username FROM user_sensor_1 WHERE user_id = %s
+                    UNION
+                    SELECT username FROM user_sensor_2 WHERE user_id = %s
+                    LIMIT 1
+                """, (fingerprint_id, fingerprint_id))
+                result = cursor.fetchone()
         
-        result = cursor.fetchone()
         conn.close()
         
         return dict(result) if result else None
@@ -963,13 +1071,25 @@ def log_manual_action(user_id, action, granted_denied, device_id=None, sensor_lo
         
         cursor = conn.cursor()
         
-        # Get username if user_id exists
+        # Get username if user_id exists - check user_machine table first, then sensor tables
         username = None
         if user_id and user_id > 0:
-            cursor.execute("SELECT username FROM store_001 WHERE user_id = %s", (user_id,))
+            # Try user_machine table first (new unified table)
+            cursor.execute("""
+                SELECT nama FROM user_machine 
+                WHERE user_id = %s AND device_id = %s 
+                LIMIT 1
+            """, (user_id, device_id))
             result = cursor.fetchone()
             if result:
                 username = result[0]
+            else:
+                # Fallback to sensor tables
+                table_name = get_sensor_table_name(device_id)
+                cursor.execute(f"SELECT username FROM {table_name} WHERE user_id = %s LIMIT 1", (user_id,))
+                result = cursor.fetchone()
+                if result:
+                    username = result[0]
         
         # Insert action log with device_id and sensor_location
         cursor.execute("""
@@ -2266,7 +2386,7 @@ def enroll_user_from_modal():
         
         cursor = conn.cursor()
         
-        # Insert ke user_machine table
+        # Insert ke user_machine table (unified table)
         cursor.execute("""
             INSERT INTO user_machine (user_id, nama, device_id, posisi, finger_template_id)
             VALUES (%s, %s, %s, %s, %s)
@@ -2276,6 +2396,17 @@ def enroll_user_from_modal():
                 finger_template_id = EXCLUDED.finger_template_id,
                 updated_at = CURRENT_TIMESTAMP
         """, (user_id, nama, device_id, posisi, finger_template_id))
+        
+        # Also insert to sensor table for backward compatibility
+        table_name = get_sensor_table_name(device_id)
+        cursor.execute(f"""
+            INSERT INTO {table_name} (user_id, username, finger_template_id)
+            VALUES (%s, %s, %s)
+            ON CONFLICT (user_id) DO UPDATE SET
+                username = EXCLUDED.username,
+                finger_template_id = EXCLUDED.finger_template_id,
+                updated_at = CURRENT_TIMESTAMP
+        """, (user_id, nama, finger_template_id))
         
         conn.commit()
         cursor.close()
@@ -2401,6 +2532,71 @@ def get_mqtt_status():
             'error': str(e),
             'broker': f'{MQTT_BROKER}:{MQTT_PORT}'
         }), 200
+
+@app.route('/api/enrollment_status/<enrollment_id>', methods=['GET'])
+@login_required
+def get_enrollment_status(enrollment_id):
+    """Get enrollment status by enrollment ID"""
+    try:
+        enrollment = enrollment_manager.get_enrollment_status(enrollment_id)
+        
+        if not enrollment:
+            return jsonify({
+                'error': 'Enrollment not found',
+                'enrollment_id': enrollment_id
+            }), 404
+        
+        # Convert datetime to ISO format for JSON
+        enrollment_data = enrollment.copy()
+        if enrollment_data.get('started_at'):
+            enrollment_data['started_at'] = enrollment_data['started_at'].isoformat()
+        if enrollment_data.get('completed_at'):
+            enrollment_data['completed_at'] = enrollment_data['completed_at'].isoformat()
+        
+        return jsonify(enrollment_data), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting enrollment status: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/enrollment_status', methods=['GET'])
+@login_required
+def get_active_enrollments():
+    """Get all active enrollments"""
+    try:
+        user_id = request.args.get('user_id')
+        
+        if user_id:
+            enrollment = enrollment_manager.get_enrollment_by_user_id(int(user_id))
+            if enrollment:
+                enrollment_data = enrollment.copy()
+                if enrollment_data.get('started_at'):
+                    enrollment_data['started_at'] = enrollment_data['started_at'].isoformat()
+                if enrollment_data.get('completed_at'):
+                    enrollment_data['completed_at'] = enrollment_data['completed_at'].isoformat()
+                return jsonify(enrollment_data), 200
+            else:
+                return jsonify({'error': 'No active enrollment found for this user'}), 404
+        else:
+            # Return all active enrollments
+            with enrollment_manager.lock:
+                active = [
+                    e for e in enrollment_manager.active_enrollments.values()
+                    if e['status'] in ['pending', 'in_progress']
+                ]
+            
+            # Convert datetime to ISO format
+            for enrollment in active:
+                if enrollment.get('started_at'):
+                    enrollment['started_at'] = enrollment['started_at'].isoformat()
+                if enrollment.get('completed_at'):
+                    enrollment['completed_at'] = enrollment['completed_at'].isoformat()
+            
+            return jsonify({'active_enrollments': active}), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting active enrollments: {e}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/next_user_id', methods=['GET'])
 @login_required
@@ -2530,17 +2726,37 @@ def enroll_user():
         
         logger.info(f"✅ MQTT client connected and ready")
         
+        # Start tracking enrollment
+        target_sensor = data.get('target_sensor')  # Optional: specific sensor
+        enrollment_data = enrollment_manager.start_enrollment(
+            user_id=int(user_id),
+            username=str(username),
+            requested_by=session.get('username', 'admin'),
+            target_sensor=target_sensor
+        )
+        enrollment_id = enrollment_data['enrollment_id']
+        
         # Prepare enrollment command
         enrollment_command = {
             'fingerprint_id': int(user_id),  # Ensure it's an integer
             'user_name': str(username),      # Ensure it's a string
             'timestamp': datetime.now().isoformat(),
             'source': 'web_ui',
-            'requested_by': session.get('username', 'admin')
+            'requested_by': session.get('username', 'admin'),
+            'enrollment_id': enrollment_id,  # Include enrollment ID for tracking
+            'target_sensor': target_sensor   # Optional: specific sensor to enroll
         }
         
         logger.info(f"📤 Sending enrollment command to MQTT topic: WHAC/Store001/add_user")
         logger.info(f"📦 Payload: {enrollment_command}")
+        
+        # Update status to in_progress
+        enrollment_manager.update_enrollment_status(
+            enrollment_id,
+            'in_progress',
+            progress=10,
+            progress_message='Sending enrollment command to local machine...'
+        )
         
         # Publish to MQTT
         try:
@@ -2557,11 +2773,20 @@ def enroll_user():
                 logger.info("⏳ Waiting for local machine to complete enrollment...")
                 logger.info("=" * 80)
                 
+                # Update status
+                enrollment_manager.update_enrollment_status(
+                    enrollment_id,
+                    'in_progress',
+                    progress=20,
+                    progress_message='Waiting for fingerprint scan on sensor...'
+                )
+                
                 return jsonify({
                     'message': 'Enrollment command sent. Please follow instructions on the fingerprint scanner.',
                     'user_id': user_id,
                     'username': username,
-                    'status': 'enrollment_started'
+                    'status': 'enrollment_started',
+                    'enrollment_id': enrollment_id
                 }), 200
             else:
                 # Map MQTT error codes to user-friendly messages
@@ -2574,22 +2799,52 @@ def enroll_user():
                 error_msg = error_messages.get(result.rc, f'Unknown MQTT error (code: {result.rc})')
                 
                 logger.error(f"❌ Failed to send enrollment command: {error_msg}")
+                
+                # Update enrollment status to error
+                enrollment_manager.complete_enrollment(
+                    enrollment_id,
+                    success=False,
+                    error_message=error_msg,
+                    progress_message=f'Failed to send command: {error_msg}'
+                )
+                
                 return jsonify({
                     'error': f'Failed to send enrollment command: {error_msg}',
                     'mqtt_error_code': result.rc,
-                    'suggestion': 'Please check MQTT broker connection and try again.'
+                    'suggestion': 'Please check MQTT broker connection and try again.',
+                    'enrollment_id': enrollment_id
                 }), 500
                 
         except Exception as mqtt_error:
             logger.error(f"❌ MQTT publish exception: {mqtt_error}")
             import traceback
             logger.error(f"❌ MQTT Traceback: {traceback.format_exc()}")
-            return jsonify({'error': f'MQTT error: {str(mqtt_error)}'}), 500
+            
+            # Update enrollment status to error
+            if enrollment_id:
+                enrollment_manager.complete_enrollment(
+                    enrollment_id,
+                    success=False,
+                    error_message=str(mqtt_error),
+                    progress_message=f'MQTT error: {str(mqtt_error)}'
+                )
+            
+            return jsonify({
+                'error': f'MQTT error: {str(mqtt_error)}',
+                'enrollment_id': enrollment_id
+            }), 500
         
     except Exception as e:
         logger.error("=" * 80)
         logger.error(f"❌ FATAL ERROR in enroll_user: {e}")
         logger.error(f"❌ Error type: {type(e).__name__}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        
+        return jsonify({
+            'error': f'Fatal error: {str(e)}',
+            'error_type': type(e).__name__
+        }), 500
 
 @app.route('/api/audio/self_inspection', methods=['POST'])
 @login_required

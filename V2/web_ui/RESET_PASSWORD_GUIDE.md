@@ -62,9 +62,9 @@ python docker-reset-password.py Iman passwordbaru123
 -- Reset password untuk user tertentu
 -- Perlu generate password hash dulu menggunakan Python
 
--- Atau gunakan hash yang sudah diketahui untuk 'admin123':
+-- Atau gunakan hash yang sudah diketahui untuk 'Admin123':
 UPDATE web_users 
-SET password_hash = '$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS',
+SET password_hash = '$2b$12$CSTFKuIf6vyTKPu5PifqVOJs14ULspN8ZuGUdu5yEgFpPh6y9X7me',
     is_active = TRUE,
     login_attempts = 0,
     locked_until = NULL

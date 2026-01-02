@@ -38,7 +38,7 @@ Kemudian jalankan SQL:
 
 ```sql
 UPDATE web_users 
-SET password_hash = '$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS',
+SET password_hash = '$2b$12$CSTFKuIf6vyTKPu5PifqVOJs14ULspN8ZuGUdu5yEgFpPh6y9X7me',
     is_active = TRUE,
     login_attempts = 0,
     locked_until = NULL
@@ -46,7 +46,7 @@ WHERE username = 'admin';
 
 -- Jika admin tidak ada, buat baru:
 INSERT INTO web_users (username, password_hash, full_name, email, role, is_active, login_attempts, locked_until)
-SELECT 'admin', '$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS', 'System Administrator', 'admin@whac.com', 'admin', TRUE, 0, NULL
+SELECT 'admin', '$2b$12$CSTFKuIf6vyTKPu5PifqVOJs14ULspN8ZuGUdu5yEgFpPh6y9X7me', 'System Administrator', 'admin@whac.com', 'admin', TRUE, 0, NULL
 WHERE NOT EXISTS (SELECT 1 FROM web_users WHERE username = 'admin');
 ```
 
@@ -55,7 +55,7 @@ WHERE NOT EXISTS (SELECT 1 FROM web_users WHERE username = 'admin');
 Setelah fix, gunakan kredensial berikut:
 
 - **Username**: `admin`
-- **Password**: `admin123`
+- **Password**: `Admin123`
 
 ## Troubleshooting
 
@@ -79,7 +79,7 @@ docker exec -it whac-postgres psql -U postgres -d whac_master -c "SELECT usernam
 docker exec -it whac-postgres psql -U postgres -d whac_master -c "SELECT password_hash FROM web_users WHERE username = 'admin';"
 ```
 
-Hash yang benar harus dimulai dengan: `$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS`
+Hash yang benar harus dimulai dengan: `$2b$12$CSTFKuIf6vyTKPu5PifqVOJs14ULspN8ZuGUdu5yEgFpPh6y9X7me`
 
 
 

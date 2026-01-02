@@ -16,14 +16,14 @@ def fix_admin_in_docker():
     # SQL to fix admin password
     sql = """
 UPDATE web_users 
-SET password_hash = '$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS',
+SET password_hash = '$2b$12$CSTFKuIf6vyTKPu5PifqVOJs14ULspN8ZuGUdu5yEgFpPh6y9X7me',
     is_active = TRUE,
     login_attempts = 0,
     locked_until = NULL
 WHERE username = 'admin';
 
 INSERT INTO web_users (username, password_hash, full_name, email, role, is_active, login_attempts, locked_until)
-SELECT 'admin', '$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS', 'System Administrator', 'admin@whac.com', 'admin', TRUE, 0, NULL
+SELECT 'admin', '$2b$12$CSTFKuIf6vyTKPu5PifqVOJs14ULspN8ZuGUdu5yEgFpPh6y9X7me', 'System Administrator', 'admin@whac.com', 'admin', TRUE, 0, NULL
 WHERE NOT EXISTS (SELECT 1 FROM web_users WHERE username = 'admin');
 
 SELECT id, username, is_active, login_attempts, locked_until FROM web_users WHERE username = 'admin';
@@ -45,7 +45,7 @@ SELECT id, username, is_active, login_attempts, locked_until FROM web_users WHER
         print("=" * 60)
         print("Login credentials:")
         print("   Username: admin")
-        print("   Password: admin123")
+        print("   Password: Admin123")
         print("=" * 60)
         return True
         

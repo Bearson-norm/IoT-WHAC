@@ -144,9 +144,9 @@ def execute_setup_script():
             # Import bcrypt to generate/verify password
             import bcrypt
             
-            # Password hash for 'admin123' - verified working hash
-            correct_hash = '$2b$12$7cD0.neGPVGRNL3X9nzY6uc5G1Ek8OB/PBhYDvcjKvZ0mcYK9yOyS'
-            test_password = 'admin123'
+            # Password hash for 'Admin123' - verified working hash
+            correct_hash = '$2b$12$CSTFKuIf6vyTKPu5PifqVOJs14ULspN8ZuGUdu5yEgFpPh6y9X7me'
+            test_password = 'Admin123'
             
             if admin_exists:
                 # Verify current password
