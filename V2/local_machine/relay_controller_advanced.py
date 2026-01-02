@@ -185,6 +185,8 @@ class AdvancedRelayController:
             logger.info("MQTT client connected")
             client.subscribe(self.ACTION_TOPIC)
             logger.info(f"Subscribed to {self.ACTION_TOPIC}")
+            client.subscribe(self.ALARM_TOPIC)
+            logger.info(f"Subscribed to {self.ALARM_TOPIC}")
         else:
             logger.error(f"MQTT connection failed with code {rc}")
             self.connected = False
@@ -202,18 +204,26 @@ class AdvancedRelayController:
             
             # Handle alarm commands
             if msg.topic == self.ALARM_TOPIC:
+                logger.info("🔔 ALARM COMMAND RECEIVED")
                 command = payload.get('command')
                 gpio_pin = payload.get('gpio_pin')
                 gpio_state = payload.get('gpio_state')
                 user_id = payload.get('user_id')
                 username = payload.get('username', 'Unknown')
                 
+                logger.info(f"   Command: {command}")
+                logger.info(f"   GPIO Pin: {gpio_pin}")
+                logger.info(f"   GPIO State: {gpio_state}")
+                logger.info(f"   User: {username} (ID: {user_id})")
+                
                 if command == 'activate' and gpio_pin == 25:
+                    logger.info("   → Processing activate alarm command...")
                     self.activate_alarm(user_id, username)
                 elif command == 'deactivate' and gpio_pin == 25:
+                    logger.info("   → Processing deactivate alarm command...")
                     self.deactivate_alarm(user_id, username)
                 else:
-                    logger.warning(f"Unknown alarm command: {command} or invalid GPIO pin: {gpio_pin}")
+                    logger.warning(f"   ⚠️  Unknown alarm command: {command} or invalid GPIO pin: {gpio_pin}")
                 return
             
             # Handle relay action commands
@@ -292,38 +302,54 @@ class AdvancedRelayController:
     def activate_alarm(self, user_id, username):
         """Activate alarm by setting GPIO 25 to LOW"""
         try:
-            logger.info(f"Activating alarm for user {user_id} ({username})")
+            logger.info("=" * 60)
+            logger.info(f"🔔 ACTIVATING ALARM for user {user_id} ({username})")
+            logger.info(f"   GPIO Pin: {self.output_pin}")
+            logger.info(f"   Target State: LOW (alarm active)")
             
             # Set GPIO 25 to LOW (alarm active)
             GPIO.output(self.output_pin, GPIO.LOW)
+            current_state = GPIO.input(self.output_pin)
             logger.info(f"✓ GPIO({self.output_pin}) set to LOW (alarm activated)")
+            logger.info(f"   Verified state: {'LOW' if current_state == GPIO.LOW else 'HIGH'}")
             
             # Log GPIO 25 LOW
             self.log_gpio_status(self.output_pin, 'LOW', 'alarm_control',
                                f'Alarm activated by {username}', user_id, None)
             
-            logger.info(f"✓ Alarm activated for user {user_id} ({username})")
+            logger.info(f"✓ Alarm activated successfully for user {user_id} ({username})")
+            logger.info("=" * 60)
             
         except Exception as e:
-            logger.error(f"Error activating alarm: {e}")
+            logger.error(f"❌ Error activating alarm: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
     
     def deactivate_alarm(self, user_id, username):
         """Deactivate alarm by setting GPIO 25 to HIGH"""
         try:
-            logger.info(f"Deactivating alarm for user {user_id} ({username})")
+            logger.info("=" * 60)
+            logger.info(f"🔕 DEACTIVATING ALARM for user {user_id} ({username})")
+            logger.info(f"   GPIO Pin: {self.output_pin}")
+            logger.info(f"   Target State: HIGH (alarm inactive)")
             
             # Set GPIO 25 to HIGH (alarm inactive)
             GPIO.output(self.output_pin, GPIO.HIGH)
+            current_state = GPIO.input(self.output_pin)
             logger.info(f"✓ GPIO({self.output_pin}) set to HIGH (alarm deactivated)")
+            logger.info(f"   Verified state: {'HIGH' if current_state == GPIO.HIGH else 'LOW'}")
             
             # Log GPIO 25 HIGH
             self.log_gpio_status(self.output_pin, 'HIGH', 'alarm_control',
                                f'Alarm deactivated by {username}', user_id, None)
             
-            logger.info(f"✓ Alarm deactivated for user {user_id} ({username})")
+            logger.info(f"✓ Alarm deactivated successfully for user {user_id} ({username})")
+            logger.info("=" * 60)
             
         except Exception as e:
-            logger.error(f"Error deactivating alarm: {e}")
+            logger.error(f"❌ Error deactivating alarm: {e}")
+            import traceback
+            logger.error(f"❌ Traceback: {traceback.format_exc()}")
     
     def log_gpio_status(self, gpio_pin, gpio_state, event_type, description, user_id=None, device_id=None):
         """Log GPIO status via MQTT to web-ui (which saves to database)"""
