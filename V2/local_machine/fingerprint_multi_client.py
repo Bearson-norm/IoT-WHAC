@@ -122,13 +122,30 @@ class SensorConnection:
                 time.sleep(0.5)  # Give sensor time to stabilize
                 self.finger = adafruit_fingerprint.Adafruit_Fingerprint(self.uart)
                 
-                # Test connection
-                if self.finger.read_templates() == adafruit_fingerprint.OK:
-                    logger.info(f"[{self.device_id}] ✓ Sensor connected! Templates: {self.finger.template_count}")
-                    self.connected = True
-                    return True
-                else:
-                    raise Exception("Failed to read templates from sensor")
+                # Test connection with retry
+                template_result = None
+                for template_retry in range(3):
+                    try:
+                        template_result = self.finger.read_templates()
+                        if template_result == adafruit_fingerprint.OK:
+                            logger.info(f"[{self.device_id}] ✓ Sensor connected! Templates: {self.finger.template_count}")
+                            self.connected = True
+                            return True
+                        else:
+                            if template_retry < 2:
+                                logger.debug(f"[{self.device_id}] Read templates failed (retry {template_retry + 1}/3), waiting...")
+                                time.sleep(0.5)
+                            else:
+                                raise Exception("Failed to read templates from sensor")
+                    except Exception as template_e:
+                        if template_retry < 2:
+                            logger.debug(f"[{self.device_id}] Read templates error (retry {template_retry + 1}/3): {template_e}")
+                            time.sleep(0.5)
+                        else:
+                            raise Exception(f"Failed to read data from sensor: {template_e}")
+                
+                # If we get here, all retries failed
+                raise Exception("Failed to read templates from sensor after 3 retries")
                     
             except serial.SerialException as e:
                 logger.error(f"[{self.device_id}] Connection attempt {attempt + 1} failed: {e}")
@@ -149,19 +166,41 @@ class SensorConnection:
                     self.release_port_lock()
                     raise
             except Exception as e:
-                logger.error(f"[{self.device_id}] Connection attempt {attempt + 1} failed: {e}")
+                error_msg = str(e)
+                logger.error(f"[{self.device_id}] Connection attempt {attempt + 1} failed: {error_msg}")
+                
+                # Close UART if open
                 if self.uart:
                     try:
                         self.uart.close()
                     except:
                         pass
                     self.uart = None
-                if attempt < retries - 1:
-                    time.sleep(2)
+                
+                # Check if this is a "Failed to read data" error - might need different port
+                if "Failed to read" in error_msg or "read templates" in error_msg.lower() or "read data" in error_msg.lower():
+                    logger.warning(f"[{self.device_id}] ⚠️  Sensor not responding on {self.port} - may need different port")
+                    # Don't retry on same port if it's a read error - let fallback handle it
+                    if attempt < retries - 1:
+                        time.sleep(1)  # Shorter wait before retry
+                    else:
+                        self.connected = False
+                        self.release_port_lock()
+                        # Return False instead of raising to trigger fallback
+                        return False
                 else:
-                    self.connected = False
-                    self.release_port_lock()
-                    raise
+                    # Other errors, retry normally
+                    if attempt < retries - 1:
+                        time.sleep(2)
+                    else:
+                        self.connected = False
+                        self.release_port_lock()
+                        # Return False to trigger fallback
+                        return False
+        
+        # If we get here, all retries failed
+        self.connected = False
+        self.release_port_lock()
         return False
     
     def disconnect(self):
@@ -566,6 +605,9 @@ class MultiSensorFingerprintClient:
             connected_ports = [s.port for s in self.sensors if s.connected]
             
             for sensor in failed_sensors:
+                # Always try fallback for any failed sensor, regardless of port type
+                # This handles cases where port is correct but sensor is on different port
+                
                 # Check if this is a ttyAMA port that failed
                 if 'ttyAMA' in sensor.port:
                     logger.info(f"[{sensor.device_id}] 🔍 Looking for alternative ttyAMA ports...")
@@ -607,12 +649,13 @@ class MultiSensorFingerprintClient:
                                 logger.warning(f"[{sensor.device_id}] ❌ Error connecting to {alt_port}: {e}, trying next port...")
                                 sensor.port = original_port  # Restore original port for next attempt
                         
-                        # If all ttyAMA alternatives failed, log summary
+                        # If all ttyAMA alternatives failed, try general auto-detection
                         if not sensor.connected:
                             logger.warning(f"[{sensor.device_id}] ⚠️  All {len(alternative_ports)} ttyAMA alternative ports failed")
-                        else:
-                            # All alternatives failed, try general auto-detection
-                            logger.info(f"[{sensor.device_id}] All ttyAMA alternatives failed, trying general auto-detection...")
+                            logger.info(f"[{sensor.device_id}] Trying general auto-detection as last resort...")
+                            # Release lock on original port if exists
+                            if sensor.port_lock_file:
+                                sensor.release_port_lock()
                             detected = self.auto_detect_fingerprint_port(sensor.device_id, prefer_ttyama=True)
                             if detected and detected not in connected_ports:
                                 logger.info(f"[{sensor.device_id}] ✅ Auto-detected alternative port: {detected}")
@@ -620,6 +663,7 @@ class MultiSensorFingerprintClient:
                                 if sensor.connect():
                                     connected_count += 1
                                     connected_ports.append(detected)
+                                    logger.info(f"[{sensor.device_id}] ✅ Successfully connected via auto-detection!")
                     else:
                         # No ttyAMA alternatives, try general auto-detection
                         logger.info(f"[{sensor.device_id}] No ttyAMA alternatives available, trying general auto-detection...")
@@ -634,18 +678,57 @@ class MultiSensorFingerprintClient:
                                 connected_count += 1
                                 connected_ports.append(detected)
                 else:
-                    # Not a ttyAMA port, try general auto-detection
-                    logger.info(f"[{sensor.device_id}] Trying general auto-detection for non-ttyAMA port...")
-                    # Release lock on original port if exists
-                    if sensor.port_lock_file:
-                        sensor.release_port_lock()
-                    detected = self.auto_detect_fingerprint_port(sensor.device_id)
-                    if detected and detected not in connected_ports:
-                        logger.info(f"[{sensor.device_id}] ✅ Auto-detected alternative port: {detected}")
-                        sensor.port = detected
-                        if sensor.connect():
-                            connected_count += 1
-                            connected_ports.append(detected)
+                    # Not a ttyAMA port, but still try ttyAMA ports first if available
+                    # This handles cases where sensor might be on ttyAMA even if configured for serial0
+                    logger.info(f"[{sensor.device_id}] Trying alternative ports for non-ttyAMA sensor...")
+                    
+                    # First, try ttyAMA ports if available
+                    if os.path.exists('/dev/ttyAMA1') or any(glob.glob('/dev/ttyAMA*')):
+                        logger.info(f"[{sensor.device_id}] Checking ttyAMA ports as alternatives...")
+                        alternative_ports = self.find_alternative_ttyama_ports(
+                            exclude_ports=connected_ports,
+                            start_from='/dev/ttyAMA1'
+                        )
+                        
+                        if alternative_ports:
+                            logger.info(f"[{sensor.device_id}] Found {len(alternative_ports)} ttyAMA alternative port(s): {alternative_ports}")
+                            for idx, alt_port in enumerate(alternative_ports, 1):
+                                logger.info(f"[{sensor.device_id}] [{idx}/{len(alternative_ports)}] Trying ttyAMA port: {alt_port}")
+                                
+                                if sensor.port_lock_file:
+                                    sensor.release_port_lock()
+                                
+                                original_port = sensor.port
+                                sensor.port = alt_port
+                                
+                                try:
+                                    if sensor.connect():
+                                        logger.info(f"[{sensor.device_id}] ✅ Successfully connected to ttyAMA port {alt_port}!")
+                                        logger.info(f"[{sensor.device_id}] Port changed from {original_port} to {alt_port}")
+                                        connected_count += 1
+                                        connected_ports.append(alt_port)
+                                        break
+                                    else:
+                                        logger.warning(f"[{sensor.device_id}] ❌ Failed to connect to {alt_port}, trying next...")
+                                        sensor.port = original_port
+                                except Exception as e:
+                                    logger.warning(f"[{sensor.device_id}] ❌ Error connecting to {alt_port}: {e}, trying next...")
+                                    sensor.port = original_port
+                    
+                    # If still not connected, try general auto-detection
+                    if not sensor.connected:
+                        logger.info(f"[{sensor.device_id}] Trying general auto-detection for non-ttyAMA port...")
+                        # Release lock on original port if exists
+                        if sensor.port_lock_file:
+                            sensor.release_port_lock()
+                        detected = self.auto_detect_fingerprint_port(sensor.device_id)
+                        if detected and detected not in connected_ports:
+                            logger.info(f"[{sensor.device_id}] ✅ Auto-detected alternative port: {detected}")
+                            sensor.port = detected
+                            if sensor.connect():
+                                connected_count += 1
+                                connected_ports.append(detected)
+                                logger.info(f"[{sensor.device_id}] ✅ Successfully connected via auto-detection!")
         
         if connected_count == 0:
             logger.error("❌ No sensors connected after trying all alternatives!")
