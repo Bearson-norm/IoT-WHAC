@@ -63,38 +63,81 @@ class AudioController:
         self.use_espeak_direct = False
         if self.use_tts:
             try:
+                # Try to initialize pyttsx3
                 self.tts_engine = pyttsx3.init()
-                # Set TTS properties (optional)
+                
                 if self.tts_engine:
+                    # Try to set properties, but don't fail if voice setting fails
                     try:
+                        # Get available voices
                         voices = self.tts_engine.getProperty('voices')
-                        if voices:
-                            # Try to use Indonesian voice if available
+                        
+                        if voices and len(voices) > 0:
+                            # Try to find and set Indonesian voice
                             voice_set = False
-                            for voice in voices:
-                                if 'indonesia' in voice.name.lower() or 'id' in voice.id.lower():
-                                    self.tts_engine.setProperty('voice', voice.id)
-                                    voice_set = True
-                                    break
-                            # If no Indonesian voice, use default (don't set voice)
+                            try:
+                                for voice in voices:
+                                    voice_name = voice.name.lower() if hasattr(voice, 'name') else ''
+                                    voice_id = voice.id.lower() if hasattr(voice, 'id') else ''
+                                    
+                                    # Check for Indonesian voice
+                                    if 'indonesia' in voice_name or 'id' in voice_id or 'indonesian' in voice_name:
+                                        try:
+                                            self.tts_engine.setProperty('voice', voice.id)
+                                            logger.info(f"✅ Using Indonesian voice: {voice.name}")
+                                            voice_set = True
+                                            break
+                                        except Exception as set_voice_error:
+                                            logger.debug(f"Failed to set voice {voice.id}: {set_voice_error}")
+                                            continue
+                            except Exception as voice_iter_error:
+                                logger.warning(f"⚠️  Error iterating voices: {voice_iter_error}")
+                            
+                            # If no Indonesian voice found or set, use default (first available)
                             if not voice_set:
-                                logger.info("ℹ️  Using default voice (Indonesian not found)")
-                        self.tts_engine.setProperty('rate', 150)  # Speech rate
-                        logger.info("✅ TTS engine initialized (pyttsx3)")
-                    except Exception as voice_error:
-                        logger.warning(f"⚠️  Voice setting failed, using default: {voice_error}")
-                        # Continue with default voice
+                                try:
+                                    # Try to use first available voice
+                                    first_voice = voices[0]
+                                    if hasattr(first_voice, 'id'):
+                                        self.tts_engine.setProperty('voice', first_voice.id)
+                                        logger.info(f"ℹ️  Using default voice: {first_voice.name}")
+                                except Exception as default_voice_error:
+                                    logger.debug(f"Using system default voice: {default_voice_error}")
+                                    # Don't set voice, use system default
+                        else:
+                            logger.info("ℹ️  No voices available, using system default")
+                        
+                        # Set speech rate (this should always work)
                         try:
-                            self.tts_engine.setProperty('rate', 150)
-                        except:
-                            pass
-            except Exception as e:
-                logger.warning(f"⚠️  pyttsx3 initialization failed: {e}")
+                            self.tts_engine.setProperty('rate', 150)  # Speech rate
+                        except Exception as rate_error:
+                            logger.debug(f"Could not set rate: {rate_error}")
+                        
+                        # Set volume (optional)
+                        try:
+                            self.tts_engine.setProperty('volume', 0.9)  # 90% volume
+                        except Exception as volume_error:
+                            logger.debug(f"Could not set volume: {volume_error}")
+                        
+                        logger.info("✅ TTS engine initialized (pyttsx3)")
+                        
+                    except Exception as property_error:
+                        # If setting properties fails, continue with default settings
+                        logger.warning(f"⚠️  Some TTS properties failed to set: {property_error}")
+                        logger.info("ℹ️  Continuing with default TTS settings")
+                        # Engine is still usable with default settings
+                        logger.info("✅ TTS engine initialized (pyttsx3) with default settings")
+                        
+            except Exception as init_error:
+                # pyttsx3 init completely failed
+                logger.warning(f"⚠️  pyttsx3 initialization failed: {init_error}")
+                self.tts_engine = None
+                
+                # Fallback to espeak direct
                 logger.info("🔄 Falling back to espeak direct...")
-                # Check if espeak is available
                 try:
                     import subprocess
-                    result = subprocess.run(['which', 'espeak'], capture_output=True, text=True)
+                    result = subprocess.run(['which', 'espeak'], capture_output=True, text=True, timeout=2)
                     if result.returncode == 0:
                         self.use_espeak_direct = True
                         logger.info("✅ Using espeak direct (fallback)")
