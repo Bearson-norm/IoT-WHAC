@@ -275,7 +275,8 @@ class MultiSensorFingerprintClient:
             try:
                 audio_dir = os.path.join(os.path.dirname(__file__), "audio")
                 os.makedirs(audio_dir, exist_ok=True)
-                self.audio_controller = get_audio_controller(audio_dir=audio_dir, use_tts=True)
+                # Use espeak directly to avoid pyttsx3 initialization issues
+                self.audio_controller = get_audio_controller(audio_dir=audio_dir, use_tts=True, prefer_espeak=True)
                 logger.info("✅ Audio controller initialized")
             except Exception as e:
                 logger.warning(f"⚠️  Failed to initialize audio controller: {e}")
