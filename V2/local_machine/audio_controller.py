@@ -60,23 +60,50 @@ class AudioController:
         
         # Initialize TTS engine if available
         self.tts_engine = None
+        self.use_espeak_direct = False
         if self.use_tts:
             try:
                 self.tts_engine = pyttsx3.init()
                 # Set TTS properties (optional)
                 if self.tts_engine:
-                    voices = self.tts_engine.getProperty('voices')
-                    if voices:
-                        # Try to use Indonesian voice if available
-                        for voice in voices:
-                            if 'indonesia' in voice.name.lower() or 'id' in voice.id.lower():
-                                self.tts_engine.setProperty('voice', voice.id)
-                                break
-                    self.tts_engine.setProperty('rate', 150)  # Speech rate
-                    logger.info("✅ TTS engine initialized")
+                    try:
+                        voices = self.tts_engine.getProperty('voices')
+                        if voices:
+                            # Try to use Indonesian voice if available
+                            voice_set = False
+                            for voice in voices:
+                                if 'indonesia' in voice.name.lower() or 'id' in voice.id.lower():
+                                    self.tts_engine.setProperty('voice', voice.id)
+                                    voice_set = True
+                                    break
+                            # If no Indonesian voice, use default (don't set voice)
+                            if not voice_set:
+                                logger.info("ℹ️  Using default voice (Indonesian not found)")
+                        self.tts_engine.setProperty('rate', 150)  # Speech rate
+                        logger.info("✅ TTS engine initialized (pyttsx3)")
+                    except Exception as voice_error:
+                        logger.warning(f"⚠️  Voice setting failed, using default: {voice_error}")
+                        # Continue with default voice
+                        try:
+                            self.tts_engine.setProperty('rate', 150)
+                        except:
+                            pass
             except Exception as e:
-                logger.warning(f"⚠️  TTS initialization failed: {e}")
-                self.use_tts = False
+                logger.warning(f"⚠️  pyttsx3 initialization failed: {e}")
+                logger.info("🔄 Falling back to espeak direct...")
+                # Check if espeak is available
+                try:
+                    import subprocess
+                    result = subprocess.run(['which', 'espeak'], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        self.use_espeak_direct = True
+                        logger.info("✅ Using espeak direct (fallback)")
+                    else:
+                        logger.warning("⚠️  espeak not found, TTS will be disabled")
+                        self.use_tts = False
+                except Exception as espeak_check_error:
+                    logger.warning(f"⚠️  espeak check failed: {espeak_check_error}")
+                    self.use_tts = False
         
         # Start playback thread
         self._start_playback_thread()
@@ -188,7 +215,23 @@ class AudioController:
     
     def _play_tts(self, text):
         """Play text-to-speech"""
+        # Try espeak direct first (if pyttsx3 failed)
+        if self.use_espeak_direct:
+            return self._play_espeak_direct(text)
+        
+        # Try pyttsx3
         if not self.use_tts or not self.tts_engine:
+            # Fallback to espeak direct if available
+            if not self.use_espeak_direct:
+                try:
+                    import subprocess
+                    result = subprocess.run(['which', 'espeak'], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        self.use_espeak_direct = True
+                        logger.info("🔄 Falling back to espeak direct...")
+                        return self._play_espeak_direct(text)
+                except:
+                    pass
             logger.warning("⚠️  TTS not available")
             return False
         
@@ -200,7 +243,52 @@ class AudioController:
             return True
             
         except Exception as e:
+            logger.warning(f"⚠️  pyttsx3 playback failed: {e}")
+            # Fallback to espeak direct
+            if not self.use_espeak_direct:
+                try:
+                    import subprocess
+                    result = subprocess.run(['which', 'espeak'], capture_output=True, text=True)
+                    if result.returncode == 0:
+                        self.use_espeak_direct = True
+                        logger.info("🔄 Falling back to espeak direct...")
+                        return self._play_espeak_direct(text)
+                except:
+                    pass
             logger.error(f"❌ Error in TTS playback: {e}")
+            return False
+    
+    def _play_espeak_direct(self, text):
+        """Play text-to-speech using espeak directly (fallback)"""
+        try:
+            import subprocess
+            logger.info(f"🔊 Speaking (espeak): {text}")
+            
+            # Use espeak with Indonesian language
+            # -v id = Indonesian voice
+            # -s 150 = speed (words per minute)
+            # -a 200 = amplitude (volume)
+            result = subprocess.run(
+                ['espeak', '-v', 'id', '-s', '150', '-a', '200', text],
+                capture_output=True,
+                timeout=30  # 30 second timeout
+            )
+            
+            if result.returncode == 0:
+                logger.info("✅ espeak playback completed")
+                return True
+            else:
+                logger.warning(f"⚠️  espeak returned error code: {result.returncode}")
+                return False
+                
+        except subprocess.TimeoutExpired:
+            logger.error("❌ espeak timeout (text too long?)")
+            return False
+        except FileNotFoundError:
+            logger.error("❌ espeak not found")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error in espeak playback: {e}")
             return False
     
     def _play_self_inspection(self):
