@@ -65,6 +65,7 @@ CREATE TABLE user_sensor_1 (
     id SERIAL PRIMARY KEY,
     user_id INTEGER UNIQUE NOT NULL,
     username VARCHAR(100) NOT NULL,
+    full_name VARCHAR(200),
     finger_template_id INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -75,6 +76,7 @@ CREATE TABLE user_sensor_2 (
     id SERIAL PRIMARY KEY,
     user_id INTEGER UNIQUE NOT NULL,
     username VARCHAR(100) NOT NULL,
+    full_name VARCHAR(200),
     finger_template_id INTEGER NOT NULL,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -137,6 +139,7 @@ CREATE TABLE attendance (
     id SERIAL PRIMARY KEY,
     user_id INTEGER NOT NULL,
     username VARCHAR(100),
+    full_name VARCHAR(200),
     attendance_date DATE NOT NULL,
     clock_in TIMESTAMP,
     clock_out TIMESTAMP,
@@ -147,6 +150,8 @@ CREATE TABLE attendance (
     device_id_out VARCHAR(50),
     sensor_location_in VARCHAR(20),
     sensor_location_out VARCHAR(20),
+    user_id_in INTEGER,
+    user_id_out INTEGER,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
     UNIQUE(user_id, attendance_date)
@@ -275,6 +280,7 @@ SELECT
     a.id,
     a.user_id,
     a.username,
+    a.full_name,
     a.attendance_date,
     a.clock_in,
     a.clock_out,
@@ -285,6 +291,8 @@ SELECT
     a.device_id_out,
     a.sensor_location_in,
     a.sensor_location_out,
+    a.user_id_in,
+    a.user_id_out,
     CASE
         WHEN a.clock_in IS NOT NULL AND a.clock_out IS NOT NULL THEN 
             EXTRACT(EPOCH FROM (a.clock_out - a.clock_in)) / 3600

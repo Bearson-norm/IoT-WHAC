@@ -53,8 +53,9 @@ MQTT_ACTION_TOPIC = os.getenv('MQTT_ACTION_TOPIC', 'WHAC/Store001/action')
 MQTT_SCAN_TOPIC = os.getenv('MQTT_SCAN_TOPIC', 'WHAC/Store001/in')
 MQTT_AUDIO_TOPIC = os.getenv('MQTT_AUDIO_TOPIC', 'WHAC/Store001/audio')
 MQTT_AUDIO_RESPONSE_TOPIC = os.getenv('MQTT_AUDIO_RESPONSE_TOPIC', 'WHAC/Store001/audio_response')
-MQTT_DOOR_STATUS_TOPIC = os.getenv('MQTT_DOOR_STATUS_TOPIC', 'WHAC/Store001/door_status')
 MQTT_GPIO_LOG_TOPIC = os.getenv('MQTT_GPIO_LOG_TOPIC', 'WHAC/Store001/gpio_log')
+MQTT_VOICE_COMMAND_TOPIC = os.getenv('MQTT_VOICE_COMMAND_TOPIC', 'WHAC/Store001/voice_command')
+MQTT_VOICE_RESPONSE_TOPIC = os.getenv('MQTT_VOICE_RESPONSE_TOPIC', 'WHAC/Store001/voice_response')
 MQTT_ALARM_TOPIC = os.getenv('MQTT_ALARM_TOPIC', 'WHAC/Store001/alarm')
 
 # Global MQTT client
@@ -193,15 +194,15 @@ def on_mqtt_connect(client, userdata, flags, rc):
         client.subscribe(MQTT_AUDIO_RESPONSE_TOPIC, qos=1)
         logger.info(f"✅ Web UI subscribed to topic: {MQTT_AUDIO_RESPONSE_TOPIC} (QoS 1)")
         
-        # Subscribe to door status updates
-        client.subscribe(MQTT_DOOR_STATUS_TOPIC, qos=1)
-        logger.info(f"✅ Web UI subscribed to topic: {MQTT_DOOR_STATUS_TOPIC} (QoS 1)")
+        # Subscribe to voice command responses
+        client.subscribe(MQTT_VOICE_RESPONSE_TOPIC, qos=1)
+        logger.info(f"✅ Web UI subscribed to topic: {MQTT_VOICE_RESPONSE_TOPIC} (QoS 1)")
         
         # Subscribe to GPIO log updates
         client.subscribe(MQTT_GPIO_LOG_TOPIC, qos=1)
         logger.info(f"✅ Web UI subscribed to topic: {MQTT_GPIO_LOG_TOPIC} (QoS 1)")
         
-        logger.info("🔔 Web UI is now listening for scan notifications, enrollment responses, door status updates, and GPIO logs...")
+        logger.info("🔔 Web UI is now listening for scan notifications, enrollment responses, voice commands, and GPIO logs...")
     else:
         logger.error(f"❌ Web UI MQTT connection failed with code {rc}")
 
@@ -271,9 +272,9 @@ def on_mqtt_message(client, userdata, msg):
                 handle_enrollment_progress(payload)
             else:
                 handle_enrollment_response(payload)
-        elif msg.topic == MQTT_DOOR_STATUS_TOPIC:
-            # Handle door status updates
-            handle_door_status_message(payload)
+        elif msg.topic == MQTT_VOICE_RESPONSE_TOPIC:
+            # Handle voice command responses
+            handle_voice_response_message(payload)
         elif msg.topic == MQTT_GPIO_LOG_TOPIC:
             # Handle GPIO log updates
             handle_gpio_log_message(payload)
@@ -606,60 +607,40 @@ def handle_enrollment_response(payload):
         except:
             pass  # Don't fail if notification fails too
 
-def emit_door_status_task(door_data):
-    """Background task to emit door status via WebSocket"""
+def emit_voice_response_task(voice_data):
+    """Background task to emit voice command response via WebSocket"""
     try:
-        logger.info(f"🚪 BACKGROUND TASK - DOOR STATUS: {door_data.get('door_status')}")
+        logger.info(f"🔊 BACKGROUND TASK - VOICE RESPONSE: {voice_data.get('command')}")
         
         socketio.sleep(0.01)
-        socketio.emit('door_status_update', door_data, namespace='/')
+        socketio.emit('voice_command_response', voice_data, namespace='/')
         socketio.sleep(0.01)
         
-        logger.info("✅ Door status emitted successfully!")
+        logger.info("✅ Voice response emitted successfully!")
         
     except Exception as e:
-        logger.error(f"❌ Error emitting door status: {e}")
+        logger.error(f"❌ Error emitting voice response: {e}")
         import traceback
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
-def handle_door_status_message(payload):
-    """Handle door status messages from local machine"""
+def handle_voice_response_message(payload):
+    """Handle voice command responses from local machine"""
     try:
         logger.info("=" * 80)
-        logger.info("🚪 DOOR STATUS UPDATE RECEIVED")
-        logger.info(f"   Status: {payload.get('door_status')}")
-        logger.info(f"   Is Closed: {payload.get('is_closed')}")
-        logger.info(f"   Timestamp: {payload.get('timestamp')}")
+        logger.info("🔊 VOICE COMMAND RESPONSE RECEIVED")
+        logger.info(f"   Command: {payload.get('command')}")
+        logger.info(f"   Status: {payload.get('status')}")
+        logger.info(f"   Message: {payload.get('message')}")
         logger.info(f"   Full payload: {payload}")
         
-        door_status = payload.get('door_status', 'unknown')
-        is_closed = payload.get('is_closed')
-        timestamp = payload.get('timestamp')
-        store_id = payload.get('store_id', 'Store001')
-        sensor_pin = payload.get('sensor_pin')
-        sensor_type = payload.get('sensor_type', 'NC')
-        
-        # Format door data for WebSocket
-        door_data = {
-            'door_status': door_status,
-            'is_closed': is_closed,
-            'status_text': 'Tertutup' if is_closed else 'Terbuka',
-            'timestamp': timestamp,
-            'store_id': store_id,
-            'sensor_pin': sensor_pin,
-            'sensor_type': sensor_type
-        }
-        
-        logger.info(f"🔄 Formatted door data for WebSocket: {door_data}")
-        
         # Use SocketIO background task to emit from MQTT thread
-        logger.info("🚀 Starting background task to emit door status...")
-        socketio.start_background_task(emit_door_status_task, door_data)
+        logger.info("🚀 Starting background task to emit voice response...")
+        socketio.start_background_task(emit_voice_response_task, payload)
         logger.info("✅ Background task started successfully!")
         logger.info("=" * 80)
         
     except Exception as e:
-        logger.error(f"❌ Error handling door status message: {e}")
+        logger.error(f"❌ Error handling voice response message: {e}")
         import traceback
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
 
@@ -1036,7 +1017,7 @@ def handle_disconnect():
     logger.info("=" * 80)
 
 def log_access_to_database(nama, device_id, status, user_id=None, action_source='modal', finger_template_id=None):
-    """Log access (grant/deny) to access_log table
+    """Log access (grant/deny) to access_log table and update attendance
     
     Args:
         nama: Nama user
@@ -1051,12 +1032,95 @@ def log_access_to_database(nama, device_id, status, user_id=None, action_source=
         if not conn:
             return False
         
-        cursor = conn.cursor()
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
+        # Log to access_log
         cursor.execute("""
             INSERT INTO access_log (nama, device_id, status, user_id, action_source, finger_template_id, timestamp)
             VALUES (%s, %s, %s, %s, %s, %s, CURRENT_TIMESTAMP)
         """, (nama, device_id, status, user_id, action_source, finger_template_id))
+        
+        # Update attendance if status is 'granted' and user_id exists
+        if status == 'granted' and user_id:
+            # Get full_name from sensor table
+            table_name = get_sensor_table_name(device_id)
+            cursor.execute(f"""
+                SELECT full_name, username FROM {table_name} WHERE user_id = %s
+            """, (user_id,))
+            user_data = cursor.fetchone()
+            full_name = user_data['full_name'] if user_data else None
+            username = user_data['username'] if user_data else nama
+            
+            # Skip attendance tracking if no full_name (backward compatibility)
+            if not full_name:
+                logger.warning(f"⚠️ No full_name for user_id {user_id}, skipping attendance tracking")
+                return True
+            
+            today = datetime.now().date()
+            current_time = datetime.now()
+            sensor_location = 'masuk' if device_id == 'AS608_001' else 'keluar'
+            
+            # Check if attendance record exists for today BY FULL_NAME (not user_id)
+            cursor.execute("""
+                SELECT * FROM attendance 
+                WHERE full_name = %s AND attendance_date = %s
+            """, (full_name, today))
+            existing = cursor.fetchone()
+            
+            if existing:
+                # Update existing attendance - merge by full_name
+                if device_id == 'AS608_001':  # Sensor Masuk
+                    cursor.execute("""
+                        UPDATE attendance SET
+                            clock_in = LEAST(COALESCE(clock_in, %s), %s),
+                            first_granted = LEAST(first_granted, %s),
+                            last_granted = GREATEST(last_granted, %s),
+                            total_granted = total_granted + 1,
+                            device_id_in = COALESCE(device_id_in, %s),
+                            sensor_location_in = COALESCE(sensor_location_in, %s),
+                            user_id_in = COALESCE(user_id_in, %s),
+                            user_id = COALESCE(user_id, %s),
+                            username = COALESCE(username, %s),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE full_name = %s AND attendance_date = %s
+                    """, (current_time, current_time, current_time, current_time, device_id, sensor_location, user_id, user_id, username, full_name, today))
+                else:  # Sensor Keluar
+                    cursor.execute("""
+                        UPDATE attendance SET
+                            clock_out = GREATEST(COALESCE(clock_out, %s), %s),
+                            first_granted = LEAST(first_granted, %s),
+                            last_granted = GREATEST(last_granted, %s),
+                            total_granted = total_granted + 1,
+                            device_id_out = COALESCE(device_id_out, %s),
+                            sensor_location_out = COALESCE(sensor_location_out, %s),
+                            user_id_out = COALESCE(user_id_out, %s),
+                            user_id = COALESCE(user_id, %s),
+                            username = COALESCE(username, %s),
+                            updated_at = CURRENT_TIMESTAMP
+                        WHERE full_name = %s AND attendance_date = %s
+                    """, (current_time, current_time, current_time, current_time, device_id, sensor_location, user_id, user_id, username, full_name, today))
+                
+                logger.info(f"✓ Attendance updated for {full_name} ({device_id})")
+            else:
+                # Create new attendance record
+                if device_id == 'AS608_001':  # Sensor Masuk
+                    cursor.execute("""
+                        INSERT INTO attendance (
+                            user_id, username, full_name, attendance_date, 
+                            clock_in, first_granted, last_granted, total_granted,
+                            device_id_in, sensor_location_in, user_id_in
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
+                    """, (user_id, username, full_name, today, current_time, current_time, current_time, device_id, sensor_location, user_id))
+                else:  # Sensor Keluar
+                    cursor.execute("""
+                        INSERT INTO attendance (
+                            user_id, username, full_name, attendance_date, 
+                            clock_out, first_granted, last_granted, total_granted,
+                            device_id_out, sensor_location_out, user_id_out
+                        ) VALUES (%s, %s, %s, %s, %s, %s, %s, 1, %s, %s, %s)
+                    """, (user_id, username, full_name, today, current_time, current_time, current_time, device_id, sensor_location, user_id))
+                
+                logger.info(f"✓ Attendance created for {full_name} ({device_id})")
         
         conn.commit()
         cursor.close()
@@ -1067,6 +1131,8 @@ def log_access_to_database(nama, device_id, status, user_id=None, action_source=
         
     except Exception as e:
         logger.error(f"Error logging access: {e}")
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return False
 
 @socketio.on('grant_access')
@@ -2818,6 +2884,7 @@ def enroll_user_from_modal():
         data = request.get_json()
         user_id = data.get('user_id')
         nama = data.get('nama')
+        full_name = data.get('full_name')  # New field
         device_id = data.get('device_id')
         posisi = data.get('posisi', '')
         finger_template_id = data.get('finger_template_id', user_id)
@@ -2842,28 +2909,30 @@ def enroll_user_from_modal():
                 updated_at = CURRENT_TIMESTAMP
         """, (user_id, nama, device_id, posisi, finger_template_id))
         
-        # Also insert to sensor table for backward compatibility
+        # Also insert to sensor table with full_name
         table_name = get_sensor_table_name(device_id)
         cursor.execute(f"""
-            INSERT INTO {table_name} (user_id, username, finger_template_id)
-            VALUES (%s, %s, %s)
+            INSERT INTO {table_name} (user_id, username, full_name, finger_template_id)
+            VALUES (%s, %s, %s, %s)
             ON CONFLICT (user_id) DO UPDATE SET
                 username = EXCLUDED.username,
+                full_name = EXCLUDED.full_name,
                 finger_template_id = EXCLUDED.finger_template_id,
                 updated_at = CURRENT_TIMESTAMP
-        """, (user_id, nama, finger_template_id))
+        """, (user_id, nama, full_name, finger_template_id))
         
         conn.commit()
         cursor.close()
         conn.close()
         
-        logger.info(f"✓ User enrolled: {nama} (ID: {user_id}, Device: {device_id})")
+        logger.info(f"✓ User enrolled: {nama} (Full Name: {full_name}, ID: {user_id}, Device: {device_id})")
         
         return jsonify({
             'status': 'success',
             'message': f'User {nama} berhasil didaftarkan',
             'user_id': user_id,
             'nama': nama,
+            'full_name': full_name,
             'device_id': device_id
         })
         
@@ -3070,6 +3139,173 @@ def get_next_user_id():
         
     except Exception as e:
         logger.error(f"Error getting next user ID: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/full_names', methods=['GET'])
+@login_required
+def get_full_names():
+    """Get all unique full names from both sensors"""
+    try:
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Get all unique full names from both sensor tables
+        cursor.execute("""
+            SELECT DISTINCT full_name, 
+                   MIN(user_id) as sample_user_id,
+                   COUNT(*) as user_count
+            FROM (
+                SELECT full_name, user_id FROM user_sensor_1 WHERE full_name IS NOT NULL
+                UNION ALL
+                SELECT full_name, user_id FROM user_sensor_2 WHERE full_name IS NOT NULL
+            ) as all_names
+            GROUP BY full_name
+            ORDER BY full_name
+        """)
+        
+        full_names = cursor.fetchall()
+        conn.close()
+        
+        return jsonify({
+            'full_names': [dict(row) for row in full_names]
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error getting full names: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/assign_full_name', methods=['POST'])
+@login_required
+def assign_full_name():
+    """Assign full name to a user in specific sensor"""
+    try:
+        data = request.get_json()
+        user_id = data.get('user_id')
+        full_name = data.get('full_name')
+        device_id = data.get('device_id')
+        
+        if not all([user_id, full_name, device_id]):
+            return jsonify({'error': 'Missing required fields: user_id, full_name, device_id'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Update full_name in appropriate sensor table
+        table_name = get_sensor_table_name(device_id)
+        cursor.execute(f"""
+            UPDATE {table_name}
+            SET full_name = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = %s
+        """, (full_name, user_id))
+        
+        if cursor.rowcount == 0:
+            conn.close()
+            return jsonify({'error': 'User not found in sensor table'}), 404
+        
+        # Update attendance records for this user_id and device
+        if device_id == 'AS608_001':
+            # Update attendance where this user_id is used for clock_in
+            cursor.execute("""
+                UPDATE attendance
+                SET full_name = %s,
+                    user_id_in = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE device_id_in = %s 
+                AND (user_id_in = %s OR (user_id_in IS NULL AND user_id = %s))
+            """, (full_name, user_id, device_id, user_id, user_id))
+        else:  # AS608_002
+            # Update attendance where this user_id is used for clock_out
+            cursor.execute("""
+                UPDATE attendance
+                SET full_name = %s,
+                    user_id_out = %s,
+                    updated_at = CURRENT_TIMESTAMP
+                WHERE device_id_out = %s 
+                AND (user_id_out = %s OR (user_id_out IS NULL AND user_id = %s))
+            """, (full_name, user_id, device_id, user_id, user_id))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✓ Full name assigned: {full_name} to user_id {user_id} on {device_id}")
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Full name "{full_name}" assigned to user {user_id}',
+            'user_id': user_id,
+            'full_name': full_name,
+            'device_id': device_id
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error assigning full name: {e}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/link_users', methods=['POST'])
+@login_required
+def link_users():
+    """Link two user_ids from different sensors with same full_name"""
+    try:
+        data = request.get_json()
+        user_id_sensor1 = data.get('user_id_sensor1')
+        user_id_sensor2 = data.get('user_id_sensor2')
+        full_name = data.get('full_name')
+        
+        if not all([user_id_sensor1, user_id_sensor2, full_name]):
+            return jsonify({'error': 'Missing required fields'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor()
+        
+        # Update both sensor tables with same full_name
+        cursor.execute("""
+            UPDATE user_sensor_1
+            SET full_name = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = %s
+        """, (full_name, user_id_sensor1))
+        
+        cursor.execute("""
+            UPDATE user_sensor_2
+            SET full_name = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE user_id = %s
+        """, (full_name, user_id_sensor2))
+        
+        # Update attendance records to link them
+        cursor.execute("""
+            UPDATE attendance
+            SET full_name = %s,
+                updated_at = CURRENT_TIMESTAMP
+            WHERE (user_id = %s OR user_id = %s)
+               OR (user_id_in = %s OR user_id_out = %s)
+        """, (full_name, user_id_sensor1, user_id_sensor2, user_id_sensor1, user_id_sensor2))
+        
+        conn.commit()
+        conn.close()
+        
+        logger.info(f"✓ Users linked: sensor1={user_id_sensor1}, sensor2={user_id_sensor2}, full_name={full_name}")
+        
+        return jsonify({
+            'status': 'success',
+            'message': f'Users linked with full name "{full_name}"',
+            'user_id_sensor1': user_id_sensor1,
+            'user_id_sensor2': user_id_sensor2,
+            'full_name': full_name
+        }), 200
+        
+    except Exception as e:
+        logger.error(f"Error linking users: {e}")
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/enroll_user', methods=['POST'])
@@ -3386,6 +3622,114 @@ def trigger_self_inspection():
         logger.error(f"❌ Traceback: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/voice_command', methods=['POST'])
+@login_required
+def send_voice_command():
+    """Send voice command to local machine via MQTT"""
+    try:
+        logger.info("=" * 80)
+        logger.info("🔊 VOICE COMMAND REQUEST")
+        
+        # Get command type from request
+        data = request.get_json()
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+        
+        command_type = data.get('command_type')
+        if not command_type:
+            return jsonify({'error': 'command_type is required'}), 400
+        
+        logger.info(f"   Command Type: {command_type}")
+        
+        # Check MQTT client
+        if not mqtt_client:
+            logger.error("❌ MQTT client not initialized")
+            return jsonify({'error': 'MQTT client not initialized. Please restart the web UI.'}), 500
+        
+        # Check if MQTT client is connected
+        if not mqtt_client.is_connected():
+            logger.warning("⚠️  MQTT client not connected, attempting to reconnect...")
+            try:
+                mqtt_client.reconnect()
+                import time
+                time.sleep(1)
+                
+                if not mqtt_client.is_connected():
+                    logger.error("❌ MQTT reconnection failed")
+                    return jsonify({
+                        'error': 'MQTT client not connected to broker.',
+                        'details': f'Broker: {MQTT_BROKER}:{MQTT_PORT}'
+                    }), 503
+                else:
+                    logger.info("✅ MQTT client reconnected successfully")
+            except Exception as reconnect_error:
+                logger.error(f"❌ MQTT reconnection error: {reconnect_error}")
+                return jsonify({
+                    'error': f'MQTT connection failed: {str(reconnect_error)}',
+                    'details': f'Broker: {MQTT_BROKER}:{MQTT_PORT}'
+                }), 503
+        
+        logger.info(f"✅ MQTT client connected and ready")
+        
+        # Prepare voice command
+        voice_command = {
+            'command': 'voice',
+            'command_type': command_type,
+            'timestamp': datetime.now().isoformat(),
+            'source': 'web_ui',
+            'requested_by': session.get('username', 'admin')
+        }
+        
+        logger.info(f"📤 Sending voice command to MQTT topic: {MQTT_VOICE_COMMAND_TOPIC}")
+        logger.info(f"📦 Payload: {voice_command}")
+        
+        # Publish to MQTT
+        try:
+            result = mqtt_client.publish(
+                MQTT_VOICE_COMMAND_TOPIC,
+                json.dumps(voice_command),
+                qos=1
+            )
+            
+            logger.info(f"📡 MQTT publish result: rc={result.rc}, mid={result.mid}")
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"✅ Voice command '{command_type}' sent successfully!")
+                logger.info("=" * 80)
+                
+                return jsonify({
+                    'message': f'Voice command "{command_type}" sent successfully.',
+                    'status': 'queued',
+                    'command_type': command_type,
+                    'timestamp': voice_command['timestamp']
+                }), 200
+            else:
+                error_messages = {
+                    mqtt.MQTT_ERR_NO_CONN: 'Not connected to MQTT broker',
+                    mqtt.MQTT_ERR_PROTOCOL: 'MQTT protocol error',
+                    mqtt.MQTT_ERR_INVAL: 'Invalid MQTT parameters',
+                    mqtt.MQTT_ERR_ERRNO: 'System error',
+                }
+                error_msg = error_messages.get(result.rc, f'Unknown MQTT error (code: {result.rc})')
+                
+                logger.error(f"❌ Failed to send voice command: {error_msg}")
+                return jsonify({
+                    'error': f'Failed to send voice command: {error_msg}',
+                    'mqtt_error_code': result.rc
+                }), 500
+                
+        except Exception as mqtt_error:
+            logger.error(f"❌ MQTT publish exception: {mqtt_error}")
+            import traceback
+            logger.error(f"❌ MQTT Traceback: {traceback.format_exc()}")
+            return jsonify({'error': f'MQTT error: {str(mqtt_error)}'}), 500
+        
+    except Exception as e:
+        logger.error(f"❌ Error in send_voice_command: {e}")
+        import traceback
+        logger.error(f"❌ Traceback: {traceback.format_exc()}")
+        return jsonify({'error': str(e)}), 500
+
 @app.route('/api/attendance')
 @login_required
 def get_attendance():
@@ -3430,6 +3774,9 @@ def get_attendance():
                 attendance_date,
                 user_id,
                 username,
+                full_name,
+                user_id_in,
+                user_id_out,
                 clock_in,
                 clock_out,
                 hours_worked,
@@ -3508,6 +3855,9 @@ def get_attendance_report():
                 attendance_date,
                 user_id,
                 username,
+                full_name,
+                user_id_in,
+                user_id_out,
                 clock_in,
                 clock_out,
                 hours_worked,

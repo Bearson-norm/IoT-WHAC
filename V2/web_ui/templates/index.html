@@ -91,6 +91,37 @@
                     <button class="btn btn-sm btn-primary" onclick="triggerSelfInspection()" title="Self-Inspection Audio">
                         <i class="fas fa-volume-up me-1"></i>Self-Inspection
                     </button>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-warning dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Perintah Instruksi">
+                            <i class="fas fa-bullhorn me-1"></i>Instruksi
+                        </button>
+                        <ul class="dropdown-menu">
+                            <li><h6 class="dropdown-header">Pemeriksaan Diri</h6></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('spin_around'); return false;"><i class="fas fa-sync me-2"></i>Berputar 360°</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('raise_hands'); return false;"><i class="fas fa-hands me-2"></i>Angkat Tangan</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('spread_arms'); return false;"><i class="fas fa-arrows-alt-h me-2"></i>Rentangkan Tangan</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('show_pockets'); return false;"><i class="fas fa-archive me-2"></i>Tunjukkan Saku</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('open_bag'); return false;"><i class="fas fa-shopping-bag me-2"></i>Buka Tas</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('remove_jacket'); return false;"><i class="fas fa-tshirt me-2"></i>Lepas Jaket</a></li>
+                            <li><hr class="dropdown-divider"></li>
+                            <li><h6 class="dropdown-header">Instruksi Umum</h6></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('step_forward'); return false;"><i class="fas fa-arrow-up me-2"></i>Maju Selangkah</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('step_back'); return false;"><i class="fas fa-arrow-down me-2"></i>Mundur</a></li>
+                            <li><a class="dropdown-item" href="#" onclick="sendVoiceCommand('wait_moment'); return false;"><i class="fas fa-clock me-2"></i>Tunggu Sebentar</a></li>
+                        </ul>
+                    </div>
+                    <div class="btn-group">
+                        <button type="button" class="btn btn-sm btn-danger dropdown-toggle" data-bs-toggle="dropdown" aria-expanded="false" title="Peringatan">
+                            <i class="fas fa-exclamation-triangle me-1"></i>Peringatan
+                        </button>
+                        <ul class="dropdown-menu">
+                            <li><a class="dropdown-item text-danger" href="#" onclick="sendVoiceCommand('prohibited_item_warning'); return false;"><i class="fas fa-ban me-2"></i>Barang Terlarang</a></li>
+                            <li><a class="dropdown-item text-danger" href="#" onclick="sendVoiceCommand('weapon_warning'); return false;"><i class="fas fa-skull-crossbones me-2"></i>Benda Berbahaya</a></li>
+                            <li><a class="dropdown-item text-danger" href="#" onclick="sendVoiceCommand('unauthorized_entry'); return false;"><i class="fas fa-door-closed me-2"></i>Akses Ditolak</a></li>
+                            <li><a class="dropdown-item text-danger" href="#" onclick="sendVoiceCommand('suspicious_behavior'); return false;"><i class="fas fa-user-secret me-2"></i>Perilaku Mencurigakan</a></li>
+                            <li><a class="dropdown-item text-danger" href="#" onclick="sendVoiceCommand('stop_immediately'); return false;"><i class="fas fa-hand-paper me-2"></i>Stop Segera</a></li>
+                        </ul>
+                    </div>
                     <button class="btn btn-sm btn-danger" onclick="activateAlarm()" title="Aktifkan Alarm" id="alarmActivateBtn">
                         <i class="fas fa-bell me-1"></i>Aktifkan Alarm
                     </button>
@@ -135,16 +166,6 @@
                         <i class="fas fa-times-circle fa-2x mb-2"></i>
                         <h4 id="denied-access-today">-</h4>
                         <p class="mb-0">Access Denied</p>
-                    </div>
-                </div>
-            </div>
-            <div class="col-md-2 mb-3">
-                <div class="card card-stat" id="door-status-card">
-                    <div class="card-body text-center">
-                        <i class="fas fa-door-open fa-2x mb-2" id="door-icon"></i>
-                        <h4 id="door-status-text">-</h4>
-                        <p class="mb-0">Status Pintu</p>
-                        <small id="door-status-time" class="text-white-50">-</small>
                     </div>
                 </div>
             </div>
@@ -337,8 +358,9 @@
                                 <thead class="table-dark">
                                     <tr>
                                         <th>Date</th>
-                                        <th>User ID</th>
-                                        <th>Username</th>
+                                        <th>Full Name</th>
+                                        <th>User ID In</th>
+                                        <th>User ID Out</th>
                                         <th>Clock In</th>
                                         <th>Clock Out</th>
                                         <th>Hours Worked</th>
@@ -349,7 +371,7 @@
                                 </thead>
                                 <tbody id="attendance-table-body">
                                     <tr>
-                                        <td colspan="9" class="loading">
+                                        <td colspan="10" class="loading">
                                             <i class="fas fa-spinner fa-spin me-2"></i>Loading attendance...
                                         </td>
                                     </tr>
@@ -437,7 +459,11 @@
                         </div>
                         
                         <div class="text-start mt-4">
-                            <h5 class="mb-3">Add New User</h5>
+                            <h5 class="mb-3" id="unknownUserTitle">Add New User</h5>
+                            <div class="alert alert-info" id="sensorLocationInfo">
+                                <i class="fas fa-map-marker-alt me-2"></i>
+                                <strong>Sensor:</strong> <span id="currentSensorLocation"></span>
+                            </div>
                             <form id="addUserFromScanForm">
                                 <div class="mb-3">
                                     <label for="newUserId" class="form-label">User ID <span class="text-danger">*</span></label>
@@ -448,13 +474,57 @@
                                 <div class="mb-3">
                                     <label for="newUsername" class="form-label">Nama <span class="text-danger">*</span></label>
                                     <input type="text" class="form-control" id="newUsername" required 
-                                           placeholder="Masukkan nama user">
+placeholder="Masukkan nama user">
                                 </div>
                                 <div class="mb-3">
                                     <label for="newUserPosisi" class="form-label">Posisi</label>
                                     <input type="text" class="form-control" id="newUserPosisi" 
                                            placeholder="Masukkan posisi/jabatan (opsional)">
                                 </div>
+                                
+                                <!-- Full Name Section - Different for Sensor 1 and Sensor 2 -->
+                                <div class="mb-3">
+                                    <label for="newUserFullName" class="form-label">
+                                        Nama Lengkap <span class="text-danger">*</span>
+                                        <i class="fas fa-info-circle text-info" data-bs-toggle="tooltip" 
+                                           title="Digunakan untuk menghubungkan data dari sensor masuk dan keluar"></i>
+                                    </label>
+                                    
+                                    <!-- For Sensor 1 (Masuk) - Input only -->
+                                    <div id="sensor1FullNameSection" style="display: none;">
+                                        <input type="text" class="form-control" id="newUserFullNameInput" required 
+                                               placeholder="Masukkan nama lengkap (contoh: John Doe)">
+                                        <small class="text-muted">
+                                            <i class="fas fa-arrow-right me-1"></i>
+                                            Nama lengkap ini akan digunakan untuk menghubungkan dengan data di sensor keluar
+                                        </small>
+                                    </div>
+                                    
+                                    <!-- For Sensor 2 (Keluar) - Select existing or input new -->
+                                    <div id="sensor2FullNameSection" style="display: none;">
+                                        <div class="mb-2">
+                                            <select class="form-select" id="existingFullNameSelect">
+                                                <option value="">-- Pilih nama lengkap yang sudah ada --</option>
+                                            </select>
+                                            <small class="text-muted">
+                                                <i class="fas fa-link me-1"></i>
+                                                Pilih nama yang sama dengan data di sensor masuk untuk menghubungkan
+                                            </small>
+                                        </div>
+                                        <div class="text-center my-2">
+                                            <span class="text-muted">-- ATAU --</span>
+                                        </div>
+                                        <div>
+                                            <input type="text" class="form-control" id="newUserFullNameInputSensor2" 
+                                                   placeholder="Masukkan nama lengkap baru">
+                                            <small class="text-muted">
+                                                <i class="fas fa-plus me-1"></i>
+                                                Buat nama lengkap baru jika belum ada di daftar
+                                            </small>
+                                        </div>
+                                    </div>
+                                </div>
+                                
                                 <div class="alert alert-info">
                                     <i class="fas fa-info-circle me-2"></i>
                                     <strong>Info:</strong> User akan didaftarkan ke sistem. Pastikan fingerprint sudah terdaftar di sensor.
@@ -679,10 +749,6 @@
                 }
             });
             
-            socket.on('door_status_update', function(data) {
-                console.log('🚪 Received door status update:', data);
-                updateDoorStatus(data);
-            });
             
             socket.on('enrollment_notification', function(data) {
                 console.log('📝 Enrollment notification received:', data);
@@ -888,6 +954,52 @@
             const deviceId = data.device_id || 'AS608_001';
             const isUnverifiedScan = data.is_unverified_scan === true;
             
+            // Update sensor location display
+            const sensorLocationName = deviceId === 'AS608_001' ? 'Pintu Masuk (Sensor 1)' : 'Pintu Keluar (Sensor 2)';
+            document.getElementById('currentSensorLocation').textContent = sensorLocationName;
+            
+            // Show/hide appropriate full name section based on sensor
+            const sensor1Section = document.getElementById('sensor1FullNameSection');
+            const sensor2Section = document.getElementById('sensor2FullNameSection');
+            
+            if (deviceId === 'AS608_001') {
+                // Sensor 1 (Masuk) - Show input only
+                sensor1Section.style.display = 'block';
+                sensor2Section.style.display = 'none';
+                document.getElementById('unknownUserTitle').textContent = 'Pendaftaran User Baru - Pintu Masuk';
+            } else {
+                // Sensor 2 (Keluar) - Show select + input
+                sensor1Section.style.display = 'none';
+                sensor2Section.style.display = 'block';
+                document.getElementById('unknownUserTitle').textContent = 'Pendaftaran User Baru - Pintu Keluar';
+                
+                // Load existing full names for sensor 2
+                try {
+                    const response = await fetch('/api/full_names');
+                    if (response.ok) {
+                        const fullNamesData = await response.json();
+                        const selectElement = document.getElementById('existingFullNameSelect');
+                        
+                        // Clear existing options except first
+                        selectElement.innerHTML = '<option value="">-- Pilih nama lengkap yang sudah ada --</option>';
+                        
+                        // Add full names from sensor 1
+                        if (fullNamesData.full_names && fullNamesData.full_names.length > 0) {
+                            fullNamesData.full_names.forEach(item => {
+                                if (item.full_name) {
+                                    const option = document.createElement('option');
+                                    option.value = item.full_name;
+                                    option.textContent = `${item.full_name} (${item.user_count} user)`;
+                                    selectElement.appendChild(option);
+                                }
+                            });
+                        }
+                    }
+                } catch (error) {
+                    console.error('Error loading full names:', error);
+                }
+            }
+            
             // For unverified scans, always get next available ID
             // The fingerprint template will be created during enrollment on sensor
             if (isUnverifiedScan || !fingerprintId || fingerprintId === 0) {
@@ -1046,8 +1158,25 @@
             const deviceId = document.getElementById('newUserId').dataset.deviceId || currentScanData?.device_id || 'AS608_001';
             const fingerprintId = document.getElementById('newUserId').dataset.fingerprintId || userId;
             
+            // Get full_name based on sensor
+            let fullName = '';
+            if (deviceId === 'AS608_001') {
+                // Sensor 1 - Get from input
+                fullName = document.getElementById('newUserFullNameInput')?.value || '';
+            } else {
+                // Sensor 2 - Get from select or input
+                const selectedFullName = document.getElementById('existingFullNameSelect')?.value || '';
+                const newFullName = document.getElementById('newUserFullNameInputSensor2')?.value || '';
+                fullName = selectedFullName || newFullName;
+            }
+            
             if (!userId || !nama) {
                 showNotification('Mohon isi semua field yang wajib (Nama)', 'error');
+                return;
+            }
+            
+            if (!fullName) {
+                showNotification('Mohon isi Nama Lengkap untuk menghubungkan data dari sensor masuk dan keluar', 'error');
                 return;
             }
             
@@ -1058,7 +1187,7 @@
                 return;
             }
             
-            console.log('📝 Enrolling new user:', {user_id: userIdInt, nama, posisi, device_id: deviceId, finger_template_id: fingerprintId});
+            console.log('📝 Enrolling new user:', {user_id: userIdInt, nama, full_name: fullName, posisi, device_id: deviceId, finger_template_id: fingerprintId});
             
             try {
                 // Check if this is from an unverified scan (needs physical enrollment on sensor)
@@ -1105,6 +1234,7 @@
                         body: JSON.stringify({
                             user_id: userIdInt,
                             nama: nama,
+                            full_name: fullName,
                             posisi: posisi,
                             device_id: deviceId,
                             finger_template_id: fingerprintId || userIdInt
@@ -1287,6 +1417,66 @@
                 }
             }
         }
+
+        async function sendVoiceCommand(commandType) {
+            try {
+                console.log(`🔊 Sending voice command: ${commandType}`);
+                
+                // Show loading notification
+                showNotification(`📤 Mengirim perintah "${commandType}"...`, 'info');
+                
+                const response = await fetch('/api/voice_command', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        command_type: commandType
+                    })
+                });
+                
+                const data = await response.json();
+                console.log('📋 Voice command response:', data);
+                
+                if (response.ok && data.status === 'queued') {
+                    const commandNames = {
+                        'spin_around': 'Berputar 360°',
+                        'raise_hands': 'Angkat Tangan',
+                        'spread_arms': 'Rentangkan Tangan',
+                        'show_pockets': 'Tunjukkan Saku',
+                        'open_bag': 'Buka Tas',
+                        'remove_jacket': 'Lepas Jaket',
+                        'turn_around_slowly': 'Berbalik Perlahan',
+                        'prohibited_item_warning': 'Peringatan Barang Terlarang',
+                        'weapon_warning': 'Peringatan Benda Berbahaya',
+                        'unauthorized_entry': 'Akses Ditolak',
+                        'suspicious_behavior': 'Perilaku Mencurigakan',
+                        'stop_immediately': 'Stop Segera',
+                        'step_forward': 'Maju Selangkah',
+                        'step_back': 'Mundur',
+                        'wait_moment': 'Tunggu Sebentar'
+                    };
+                    const displayName = commandNames[commandType] || commandType;
+                    showNotification(`✅ Perintah "${displayName}" berhasil dikirim!`, 'success');
+                } else {
+                    showNotification(`❌ Gagal: ${data.error || 'Unknown error'}`, 'error');
+                }
+            } catch (error) {
+                console.error('❌ Error sending voice command:', error);
+                showNotification('❌ Error mengirim perintah suara', 'error');
+            }
+        }
+        
+        // Listen for voice command responses
+        socket.on('voice_command_response', function(data) {
+            console.log('🔊 Voice command response received:', data);
+            
+            if (data.status === 'completed') {
+                console.log(`✅ Voice command "${data.command}" completed successfully`);
+            } else if (data.status === 'error') {
+                showNotification(`❌ Voice command error: ${data.message}`, 'error');
+            }
+        });
         
         function clearNotifications() {
             const container = document.getElementById('toast-container');
@@ -1296,25 +1486,41 @@
         }
         
         function updateConnectionStatus(connected) {
-            // Add connection status to the page
+            // Add connection status to the page (small indicator at bottom right)
             let statusElement = document.getElementById('websocket-status');
             if (!statusElement) {
                 statusElement = document.createElement('div');
                 statusElement.id = 'websocket-status';
-                statusElement.style.cssText = 'position: fixed; top: 10px; right: 10px; padding: 10px; border-radius: 5px; z-index: 9999; font-weight: bold;';
+                statusElement.style.cssText = 'position: fixed; bottom: 10px; right: 10px; padding: 5px 10px; border-radius: 4px; z-index: 1000; font-size: 11px; font-weight: normal; opacity: 0.8; transition: opacity 0.3s; cursor: pointer;';
+                statusElement.title = 'Click to hide';
+                statusElement.onclick = function() {
+                    this.style.display = 'none';
+                };
                 document.body.appendChild(statusElement);
             }
             
+            // Show the element
+            statusElement.style.display = 'block';
+            
             if (connected) {
-                statusElement.textContent = '🟢 WebSocket Connected';
+                statusElement.textContent = '🟢 Connected';
                 statusElement.style.backgroundColor = '#d4edda';
                 statusElement.style.color = '#155724';
                 statusElement.style.border = '1px solid #c3e6cb';
             } else {
-                statusElement.textContent = '🔴 WebSocket Disconnected';
+                statusElement.textContent = '🔴 Disconnected';
                 statusElement.style.backgroundColor = '#f8d7da';
                 statusElement.style.color = '#721c24';
                 statusElement.style.border = '1px solid #f5c6cb';
+            }
+            
+            // Auto-hide after 3 seconds if connected (to reduce UI clutter)
+            if (connected) {
+                setTimeout(function() {
+                    if (statusElement) {
+                        statusElement.style.opacity = '0.5';
+                    }
+                }, 3000);
             }
         }
 
@@ -1410,70 +1616,6 @@
             }
         }
 
-        // Update door status display
-        function updateDoorStatus(data) {
-            try {
-                const isClosed = data.is_closed;
-                const statusText = data.status_text || (isClosed ? 'Tertutup' : 'Terbuka');
-                const timestamp = data.timestamp;
-                
-                // Update status text
-                const statusElement = document.getElementById('door-status-text');
-                if (statusElement) {
-                    statusElement.textContent = statusText;
-                }
-                
-                // Update icon
-                const iconElement = document.getElementById('door-icon');
-                if (iconElement) {
-                    if (isClosed) {
-                        iconElement.className = 'fas fa-door-closed fa-2x mb-2';
-                    } else {
-                        iconElement.className = 'fas fa-door-open fa-2x mb-2';
-                    }
-                }
-                
-                // Update card color
-                const cardElement = document.getElementById('door-status-card');
-                if (cardElement) {
-                    // Remove existing status classes
-                    cardElement.classList.remove('success', 'danger', 'warning');
-                    
-                    // Add appropriate class
-                    if (isClosed) {
-                        cardElement.classList.add('success');
-                    } else {
-                        cardElement.classList.add('danger');
-                    }
-                }
-                
-                // Update timestamp
-                const timeElement = document.getElementById('door-status-time');
-                if (timeElement && timestamp) {
-                    try {
-                        const date = new Date(timestamp);
-                        const timeStr = date.toLocaleTimeString('id-ID', { 
-                            hour: '2-digit', 
-                            minute: '2-digit', 
-                            second: '2-digit' 
-                        });
-                        timeElement.textContent = timeStr;
-                    } catch (e) {
-                        timeElement.textContent = 'Just now';
-                    }
-                }
-                
-                console.log(`✅ Door status updated: ${statusText} (${isClosed ? 'CLOSED' : 'OPEN'})`);
-                
-                // Show notification if door is opened (optional)
-                if (!isClosed) {
-                    showNotification('Pintu terbuka!', 'warning');
-                }
-                
-            } catch (error) {
-                console.error('❌ Error updating door status:', error);
-            }
-        }
 
         // Load fingerprint logs
         async function loadLogs(page = 1) {
@@ -1840,6 +1982,45 @@
         // Attendance functions
         let currentAttendancePage = 1;
 
+        /**
+         * Format datetime to Indonesian format (24-hour format)
+         * Format: DD/MM/YYYY, HH:mm:ss
+         */
+        function formatDateTime(dateString) {
+            if (!dateString) return '-';
+            
+            const date = new Date(dateString);
+            
+            // Check if date is valid
+            if (isNaN(date.getTime())) return '-';
+            
+            // Format: DD/MM/YYYY, HH:mm:ss
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            const hours = String(date.getHours()).padStart(2, '0');
+            const minutes = String(date.getMinutes()).padStart(2, '0');
+            const seconds = String(date.getSeconds()).padStart(2, '0');
+            
+            return `${day}/${month}/${year}, ${hours}:${minutes}:${seconds}`;
+        }
+
+        /**
+         * Format date only (DD/MM/YYYY)
+         */
+        function formatDate(dateString) {
+            if (!dateString) return '-';
+            
+            const date = new Date(dateString);
+            if (isNaN(date.getTime())) return '-';
+            
+            const day = String(date.getDate()).padStart(2, '0');
+            const month = String(date.getMonth() + 1).padStart(2, '0');
+            const year = date.getFullYear();
+            
+            return `${day}/${month}/${year}`;
+        }
+
         async function loadAttendance(page = 1) {
             try {
                 const startDate = document.getElementById('attendance-start-date').value;
@@ -1856,20 +2037,24 @@
                 tbody.innerHTML = '';
                 
                 if (data.attendance.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="9" class="text-center">No attendance records found</td></tr>';
+                    tbody.innerHTML = '<tr><td colspan="10" class="text-center">No attendance records found</td></tr>';
                     return;
                 }
                 
                 data.attendance.forEach(record => {
                     const row = document.createElement('tr');
-                    const clockIn = record.clock_in ? new Date(record.clock_in).toLocaleString() : '-';
-                    const clockOut = record.clock_out ? new Date(record.clock_out).toLocaleString() : '-';
+                    const clockIn = formatDateTime(record.clock_in);
+                    const clockOut = formatDateTime(record.clock_out);
                     const hoursWorked = record.hours_worked ? record.hours_worked.toFixed(2) : '-';
+                    const fullName = record.full_name || record.username || 'Unknown';
+                    const userIdIn = record.user_id_in || (record.device_id_in ? record.user_id : '-');
+                    const userIdOut = record.user_id_out || (record.device_id_out ? record.user_id : '-');
                     
                     row.innerHTML = `
-                        <td>${new Date(record.attendance_date).toLocaleDateString()}</td>
-                        <td>${record.user_id || 'N/A'}</td>
-                        <td>${record.username || 'Unknown'}</td>
+                        <td>${formatDate(record.attendance_date)}</td>
+                        <td><strong>${fullName}</strong></td>
+                        <td>${userIdIn}</td>
+                        <td>${userIdOut}</td>
                         <td>${clockIn}</td>
                         <td>${clockOut}</td>
                         <td>${hoursWorked}</td>

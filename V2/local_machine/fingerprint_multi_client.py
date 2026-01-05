@@ -266,6 +266,7 @@ class MultiSensorFingerprintClient:
         self.EXPORT_TOPIC = "WHAC/Store001/export"  # for exporting users
         self.ACTION_TOPIC = "WHAC/Store001/action"  # for relay control commands
         self.AUDIO_TOPIC = "WHAC/Store001/audio"  # for audio commands (self-inspection)
+        self.VOICE_COMMAND_TOPIC = "WHAC/Store001/voice_command"  # for voice command instructions
         self.STATUS_TOPIC = "WHAC/Store001/relay_status"  # for status updates
         
         # Initialize audio controller
@@ -778,7 +779,8 @@ class MultiSensorFingerprintClient:
                 self.mqtt_client.subscribe(self.EXPORT_TOPIC, qos=MQTT_QOS)
                 self.mqtt_client.subscribe(self.ACTION_TOPIC, qos=MQTT_QOS)
                 self.mqtt_client.subscribe(self.AUDIO_TOPIC, qos=MQTT_QOS)
-                logger.info(f"✓ Subscribed to command topics (including audio)")
+                self.mqtt_client.subscribe(self.VOICE_COMMAND_TOPIC, qos=MQTT_QOS)
+                logger.info(f"✓ Subscribed to command topics (including audio and voice commands)")
                 return True
             else:
                 logger.error("✗ Failed to connect to MQTT broker within timeout")
@@ -830,6 +832,8 @@ class MultiSensorFingerprintClient:
                     self.handle_relay_action(payload)
                 elif topic == self.AUDIO_TOPIC:
                     self.handle_audio_command(payload)
+                elif topic == self.VOICE_COMMAND_TOPIC:
+                    self.handle_voice_command(payload)
             except Exception as e:
                 logger.error(f"Error handling command: {e}")
     
@@ -1163,6 +1167,59 @@ class MultiSensorFingerprintClient:
             logger.error(f"❌ Error handling audio command: {e}")
             self.send_audio_response(payload.get('command', 'unknown'), 'error', {'message': str(e)})
     
+    def handle_voice_command(self, payload):
+        """Handle voice command instructions - NON-BLOCKING"""
+        try:
+            command = payload.get('command', 'voice')
+            command_type = payload.get('command_type', '')
+            source = payload.get('source', 'web_ui')
+            requested_by = payload.get('requested_by', 'unknown')
+            
+            logger.info(f"🔊 Voice command received: {command_type} from {source} (requested by: {requested_by})")
+            
+            if not self.audio_controller:
+                logger.warning("⚠️  Audio controller not available")
+                self.send_voice_response(command_type, 'error', 'Audio controller not available')
+                return
+            
+            if not command_type:
+                logger.error("❌ Voice command type not provided")
+                self.send_voice_response(command_type, 'error', 'Command type not provided')
+                return
+            
+            # Check if audio is already playing
+            if self.audio_controller.is_busy():
+                logger.warning("⚠️  Audio is already playing, queuing request")
+            
+            # Play voice command
+            success = self.audio_controller.play_voice_command(
+                command_type,
+                callback=lambda result: self._on_voice_complete(command_type, result)
+            )
+            
+            if success:
+                logger.info(f"✅ Voice command '{command_type}' queued successfully")
+                self.send_voice_response(command_type, 'queued', f'Voice command "{command_type}" started')
+            else:
+                logger.error(f"❌ Failed to queue voice command '{command_type}'")
+                self.send_voice_response(command_type, 'error', 'Failed to queue voice command')
+                
+        except Exception as e:
+            logger.error(f"❌ Error handling voice command: {e}")
+            self.send_voice_response(payload.get('command_type', 'unknown'), 'error', str(e))
+    
+    def _on_voice_complete(self, command_type, success):
+        """Callback when voice command playback completes"""
+        try:
+            if success:
+                logger.info(f"✅ Voice command playback completed: {command_type}")
+                self.send_voice_response(command_type, 'completed', 'Voice command playback completed')
+            else:
+                logger.warning(f"⚠️  Voice command playback failed: {command_type}")
+                self.send_voice_response(command_type, 'error', 'Voice command playback failed')
+        except Exception as e:
+            logger.error(f"Error in voice command completion callback: {e}")
+    
     def _on_audio_complete(self, command_type, success):
         """Callback when audio playback completes"""
         try:
@@ -1203,6 +1260,36 @@ class MultiSensorFingerprintClient:
                 
         except Exception as e:
             logger.error(f"Error sending audio response: {e}")
+            return False
+    
+    def send_voice_response(self, command_type, status, message):
+        """Send voice command response back to MQTT"""
+        try:
+            if not self.connected:
+                return False
+            
+            response = {
+                "store_id": STORE_ID,
+                "timestamp": datetime.now().isoformat(),
+                "command": command_type,
+                "status": status,
+                "message": message,
+                "device_id": "MULTI_SENSOR"
+            }
+            
+            response_topic = f"WHAC/Store001/voice_response"
+            payload = json.dumps(response)
+            result = self.mqtt_client.publish(response_topic, payload, qos=MQTT_QOS)
+            
+            if result.rc == mqtt.MQTT_ERR_SUCCESS:
+                logger.info(f"✓ Voice response sent: {command_type} - {status}")
+                return True
+            else:
+                logger.error(f"✗ Failed to send voice response (rc: {result.rc})")
+                return False
+                
+        except Exception as e:
+            logger.error(f"Error sending voice response: {e}")
             return False
     
     def send_relay_status(self, command, user_id, action, source):

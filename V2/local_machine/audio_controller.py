@@ -128,6 +128,8 @@ class AudioController:
                     success = self._play_tts(audio_data)
                 elif audio_type == 'self_inspection':
                     success = self._play_self_inspection()
+                elif audio_type == 'voice_command':
+                    success = self._play_voice_command(audio_data)
                 
                 # Mark as not playing
                 with self.lock:
@@ -235,6 +237,104 @@ class AudioController:
         
         return True
     
+    def _play_voice_command(self, command_type):
+        """Play voice command based on type"""
+        logger.info(f"🔊 Playing voice command: {command_type}")
+        
+        # Voice command templates (Indonesian)
+        voice_templates = {
+            # Self-inspection commands
+            'spin_around': {
+                'file': 'spin_around.mp3',
+                'text': 'Silakan berputar tiga ratus enam puluh derajat. Putar badan Anda secara perlahan.'
+            },
+            'raise_hands': {
+                'file': 'raise_hands.mp3',
+                'text': 'Angkat kedua tangan Anda ke atas. Rentangkan tangan Anda.'
+            },
+            'spread_arms': {
+                'file': 'spread_arms.mp3',
+                'text': 'Rentangkan kedua tangan Anda ke samping. Tunjukkan bahwa Anda tidak membawa barang berbahaya.'
+            },
+            'show_pockets': {
+                'file': 'show_pockets.mp3',
+                'text': 'Silakan tunjukkan isi saku Anda. Keluarkan semua barang dari saku.'
+            },
+            'open_bag': {
+                'file': 'open_bag.mp3',
+                'text': 'Silakan buka tas Anda untuk pemeriksaan. Tunjukkan isi tas Anda.'
+            },
+            'remove_jacket': {
+                'file': 'remove_jacket.mp3',
+                'text': 'Silakan lepaskan jaket atau sweater Anda untuk pemeriksaan.'
+            },
+            'turn_around_slowly': {
+                'file': 'turn_around_slowly.mp3',
+                'text': 'Silakan berbalik secara perlahan. Tunjukkan bahwa Anda tidak menyembunyikan sesuatu.'
+            },
+            
+            # Warning messages
+            'prohibited_item_warning': {
+                'file': 'prohibited_warning.mp3',
+                'text': 'Peringatan! Anda terdeteksi membawa barang yang tidak diperbolehkan. Silakan tinggalkan barang tersebut atau hubungi petugas.'
+            },
+            'weapon_warning': {
+                'file': 'weapon_warning.mp3',
+                'text': 'Peringatan! Terdeteksi benda berbahaya. Segera letakkan dan jangan bergerak. Petugas akan segera datang.'
+            },
+            'unauthorized_entry': {
+                'file': 'unauthorized_entry.mp3',
+                'text': 'Akses ditolak. Anda tidak memiliki izin untuk memasuki area ini. Silakan hubungi administrator.'
+            },
+            'suspicious_behavior': {
+                'file': 'suspicious_behavior.mp3',
+                'text': 'Peringatan! Perilaku mencurigakan terdeteksi. Mohon tunggu, petugas keamanan akan segera datang.'
+            },
+            'stop_immediately': {
+                'file': 'stop_immediately.mp3',
+                'text': 'Stop! Berhenti di tempat Anda berada. Jangan bergerak. Petugas akan melakukan pemeriksaan.'
+            },
+            
+            # General instructions
+            'step_forward': {
+                'file': 'step_forward.mp3',
+                'text': 'Silakan maju satu langkah untuk pemeriksaan lebih lanjut.'
+            },
+            'step_back': {
+                'file': 'step_back.mp3',
+                'text': 'Silakan mundur dan tunggu giliran Anda.'
+            },
+            'wait_moment': {
+                'file': 'wait_moment.mp3',
+                'text': 'Mohon tunggu sebentar. Sistem sedang memproses verifikasi Anda.'
+            }
+        }
+        
+        # Get command template
+        template = voice_templates.get(command_type)
+        if not template:
+            logger.warning(f"⚠️  Unknown voice command: {command_type}")
+            return False
+        
+        # Try to play audio file first
+        audio_file = template['file']
+        filepath = os.path.join(self.audio_dir, audio_file)
+        
+        if os.path.exists(filepath) and self.pygame_available:
+            logger.info(f"🎵 Playing audio file: {audio_file}")
+            return self._play_file(audio_file)
+        
+        # Fallback to TTS
+        if self.use_tts:
+            logger.info(f"🔄 Using TTS for voice command: {command_type}")
+            return self._play_tts(template['text'])
+        
+        # Last resort: print message
+        logger.warning(f"⚠️  No audio capability available, printing message:")
+        logger.info(f"   {template['text']}")
+        
+        return True
+    
     def play_self_inspection(self, callback=None):
         """
         Queue self-inspection audio (NON-BLOCKING)
@@ -318,6 +418,32 @@ class AudioController:
             return False
         except Exception as e:
             logger.error(f"❌ Error queueing TTS: {e}")
+            return False
+    
+    def play_voice_command(self, command_type, callback=None):
+        """
+        Queue voice command (NON-BLOCKING)
+        
+        Args:
+            command_type: Type of voice command (e.g., 'spin_around', 'raise_hands', etc.)
+            callback: Optional callback function(success: bool)
+        
+        Returns:
+            bool: True if queued successfully
+        """
+        try:
+            self.audio_queue.put_nowait({
+                'type': 'voice_command',
+                'data': command_type,
+                'callback': callback
+            })
+            logger.info(f"✅ Voice command queued: {command_type}")
+            return True
+        except queue.Full:
+            logger.error("❌ Audio queue is full")
+            return False
+        except Exception as e:
+            logger.error(f"❌ Error queueing voice command: {e}")
             return False
     
     def is_busy(self):
