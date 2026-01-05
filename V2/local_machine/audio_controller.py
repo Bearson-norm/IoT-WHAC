@@ -79,38 +79,38 @@ class AudioController:
                     logger.warning(f"⚠️  espeak check failed: {espeak_check_error}")
                     self.use_tts = False
             else:
-            # Try to initialize pyttsx3 with different drivers
-            pyttsx3_initialized = False
-            
-            # List of drivers to try (in order of preference)
-            drivers_to_try = [None, 'sapi5', 'nsss', 'espeak']
-            
-            for driver in drivers_to_try:
-                try:
-                    if driver:
-                        logger.debug(f"Trying pyttsx3 with driver: {driver}")
-                        self.tts_engine = pyttsx3.init(driverName=driver)
-                    else:
-                        logger.debug("Trying pyttsx3 with default driver")
-                        self.tts_engine = pyttsx3.init()
-                    
-                    # Test if engine works by getting voices (this will fail if init really failed)
+                # Try to initialize pyttsx3 with different drivers
+                pyttsx3_initialized = False
+                
+                # List of drivers to try (in order of preference)
+                drivers_to_try = [None, 'sapi5', 'nsss', 'espeak']
+                
+                for driver in drivers_to_try:
                     try:
-                        test_voices = self.tts_engine.getProperty('voices')
-                        pyttsx3_initialized = True
-                        logger.info(f"✅ pyttsx3 initialized successfully (driver: {driver or 'default'})")
-                        break
-                    except Exception as test_error:
-                        logger.debug(f"pyttsx3 init test failed with driver {driver}: {test_error}")
+                        if driver:
+                            logger.debug(f"Trying pyttsx3 with driver: {driver}")
+                            self.tts_engine = pyttsx3.init(driverName=driver)
+                        else:
+                            logger.debug("Trying pyttsx3 with default driver")
+                            self.tts_engine = pyttsx3.init()
+                        
+                        # Test if engine works by getting voices (this will fail if init really failed)
+                        try:
+                            test_voices = self.tts_engine.getProperty('voices')
+                            pyttsx3_initialized = True
+                            logger.info(f"✅ pyttsx3 initialized successfully (driver: {driver or 'default'})")
+                            break
+                        except Exception as test_error:
+                            logger.debug(f"pyttsx3 init test failed with driver {driver}: {test_error}")
+                            self.tts_engine = None
+                            continue
+                            
+                    except Exception as init_error:
+                        logger.debug(f"pyttsx3 init failed with driver {driver}: {init_error}")
                         self.tts_engine = None
                         continue
-                        
-                except Exception as init_error:
-                    logger.debug(f"pyttsx3 init failed with driver {driver}: {init_error}")
-                    self.tts_engine = None
-                    continue
-            
-            if pyttsx3_initialized and self.tts_engine:
+                
+                if pyttsx3_initialized and self.tts_engine:
                     # Try to set properties, but don't fail if voice setting fails
                     try:
                         # Get available voices
@@ -171,26 +171,26 @@ class AudioController:
                         logger.info("ℹ️  Continuing with default TTS settings")
                         # Engine is still usable with default settings
                         logger.info("✅ TTS engine initialized (pyttsx3) with default settings")
-                        
-            else:
-                # pyttsx3 init completely failed with all drivers
-                logger.warning("⚠️  pyttsx3 initialization failed with all drivers")
-                self.tts_engine = None
                 
-                # Fallback to espeak direct
-                logger.info("🔄 Falling back to espeak direct...")
-                try:
-                    import subprocess
-                    result = subprocess.run(['which', 'espeak'], capture_output=True, text=True, timeout=2)
-                    if result.returncode == 0:
-                        self.use_espeak_direct = True
-                        logger.info("✅ Using espeak direct (fallback)")
-                    else:
-                        logger.warning("⚠️  espeak not found, TTS will be disabled")
+                else:
+                    # pyttsx3 init completely failed with all drivers
+                    logger.warning("⚠️  pyttsx3 initialization failed with all drivers")
+                    self.tts_engine = None
+                    
+                    # Fallback to espeak direct
+                    logger.info("🔄 Falling back to espeak direct...")
+                    try:
+                        import subprocess
+                        result = subprocess.run(['which', 'espeak'], capture_output=True, text=True, timeout=2)
+                        if result.returncode == 0:
+                            self.use_espeak_direct = True
+                            logger.info("✅ Using espeak direct (fallback)")
+                        else:
+                            logger.warning("⚠️  espeak not found, TTS will be disabled")
+                            self.use_tts = False
+                    except Exception as espeak_check_error:
+                        logger.warning(f"⚠️  espeak check failed: {espeak_check_error}")
                         self.use_tts = False
-                except Exception as espeak_check_error:
-                    logger.warning(f"⚠️  espeak check failed: {espeak_check_error}")
-                    self.use_tts = False
         
         # Start playback thread
         self._start_playback_thread()
