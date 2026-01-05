@@ -592,6 +592,7 @@ placeholder="Masukkan nama user">
     <script>
         let currentLogsPage = 1;
         let currentActionsPage = 1;
+        let currentAttendancePage = 1;
         let dailyScansChart, accessStatusChart;
         let socket;
         let currentScanData = null;
@@ -749,6 +750,16 @@ placeholder="Masukkan nama user">
                 }
             });
             
+            // Listen for voice command responses
+            socket.on('voice_command_response', function(data) {
+                console.log('🔊 Voice command response received:', data);
+                
+                if (data.status === 'completed') {
+                    console.log(`✅ Voice command "${data.command}" completed successfully`);
+                } else if (data.status === 'error') {
+                    showNotification(`❌ Voice command error: ${data.message}`, 'error');
+                }
+            });
             
             socket.on('enrollment_notification', function(data) {
                 console.log('📝 Enrollment notification received:', data);
@@ -1467,17 +1478,6 @@ placeholder="Masukkan nama user">
             }
         }
         
-        // Listen for voice command responses
-        socket.on('voice_command_response', function(data) {
-            console.log('🔊 Voice command response received:', data);
-            
-            if (data.status === 'completed') {
-                console.log(`✅ Voice command "${data.command}" completed successfully`);
-            } else if (data.status === 'error') {
-                showNotification(`❌ Voice command error: ${data.message}`, 'error');
-            }
-        });
-        
         function clearNotifications() {
             const container = document.getElementById('toast-container');
             if (container) {
@@ -1980,7 +1980,6 @@ placeholder="Masukkan nama user">
         }
 
         // Attendance functions
-        let currentAttendancePage = 1;
 
         /**
          * Format datetime to Indonesian format (24-hour format)
