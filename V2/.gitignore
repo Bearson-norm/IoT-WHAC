@@ -1,0 +1,85 @@
+# VPS Deployment - Environment Files
+# These files contain sensitive information and should NOT be committed to Git
+
+# Environment configuration
+vps.env
+.env
+*.env
+
+# Exclude the example/template files
+!vps-env.example
+!env.example
+!.env.example
+!web_ui/env.example
+!server/env.example
+!local_machine/env.example
+
+# Database backups
+*.sql
+*.sql.gz
+backups/
+backup_*.sql*
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Database files
+*.db
+*.db-shm
+*.db-wal
+
+# Python cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+env.bak/
+venv.bak/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+*.bak
+*.swp
+
+# SSL certificates
+*.pem
+*.key
+*.crt
+*.cert
+

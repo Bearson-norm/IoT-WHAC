@@ -341,14 +341,16 @@
                     <div class="card-header d-flex justify-content-between align-items-center">
                         <h5><i class="fas fa-clock me-2"></i>Attendance Records</h5>
                         <div>
-                            <input type="date" id="attendance-start-date" class="form-control form-control-sm d-inline-block" style="width: auto;">
-                            <span class="mx-2">to</span>
-                            <input type="date" id="attendance-end-date" class="form-control form-control-sm d-inline-block" style="width: auto;">
+                            <label for="attendance-date" class="me-2">Tanggal:</label>
+                            <input type="date" id="attendance-date" class="form-control form-control-sm d-inline-block" style="width: auto;">
                             <button class="btn btn-primary btn-sm ms-2" onclick="loadAttendance()">
                                 <i class="fas fa-sync-alt me-1"></i>Refresh
                             </button>
                             <button class="btn btn-success btn-sm ms-2" onclick="generateAttendanceReport()">
-                                <i class="fas fa-file-download me-1"></i>Generate Report
+                                <i class="fas fa-file-download me-1"></i>Generate Report (CSV)
+                            </button>
+                            <button class="btn btn-danger btn-sm ms-2" onclick="generateAttendanceReportPDF()">
+                                <i class="fas fa-file-pdf me-1"></i>Download PDF
                             </button>
                         </div>
                     </div>
@@ -985,7 +987,7 @@ placeholder="Masukkan nama user">
             }
             
             if (scanTimestamp) {
-                scanTimestamp.textContent = new Date(data.timestamp).toLocaleString();
+                scanTimestamp.textContent = formatDateTime(data.timestamp);
             } else {
                 console.error('❌ scanTimestamp element not found!');
             }
@@ -1114,7 +1116,7 @@ placeholder="Masukkan nama user">
             // Update timestamp with null check
             const unknownTimestamp = document.getElementById('unknownTimestamp');
             if (unknownTimestamp) {
-                unknownTimestamp.textContent = new Date(data.timestamp).toLocaleString();
+                unknownTimestamp.textContent = formatDateTime(data.timestamp);
             } else {
                 console.error('❌ unknownTimestamp element not found!');
             }
@@ -1304,6 +1306,8 @@ placeholder="Masukkan nama user">
                         body: JSON.stringify({
                             user_id: userIdInt,
                             username: nama,
+                            full_name: fullName,  // Include full_name for database
+                            posisi: posisi,       // Include posisi for database
                             target_sensor: deviceId  // Specify which sensor to enroll on
                         })
                     });
@@ -1721,7 +1725,7 @@ placeholder="Masukkan nama user">
                 data.logs.forEach(log => {
                     const row = document.createElement('tr');
                     row.innerHTML = `
-                        <td>${new Date(log.timestamp).toLocaleString()}</td>
+                        <td>${formatDateTime(log.timestamp)}</td>
                         <td>${log.user_id || 'N/A'}</td>
                         <td>${log.display_name || 'Unknown'}</td>
                         <td>${log.store_id}</td>
@@ -1756,7 +1760,7 @@ placeholder="Masukkan nama user">
                     const row = document.createElement('tr');
                     const statusClass = log.granted_denied === 'granted' ? 'success' : 'danger';
                     row.innerHTML = `
-                        <td>${new Date(log.timestamp).toLocaleString()}</td>
+                        <td>${formatDateTime(log.timestamp)}</td>
                         <td>${log.user_id || 'N/A'}</td>
                         <td>${log.username || 'Unknown'}</td>
                         <td>${log.action}</td>
@@ -1794,7 +1798,7 @@ placeholder="Masukkan nama user">
                         <td>${user.username}</td>
                         <td>${user.finger_template_id}</td>
                         <td>${user.total_scans || 0}</td>
-                        <td>${user.last_scan ? new Date(user.last_scan).toLocaleString() : 'Never'}</td>
+                            <td>${user.last_scan ? formatDateTime(user.last_scan) : 'Never'}</td>
                         <td>
                             <button class="btn btn-danger btn-sm" onclick="deleteUser(${user.user_id})">
                                 <i class="fas fa-trash"></i>
@@ -2069,17 +2073,60 @@ placeholder="Masukkan nama user">
         // Attendance functions
 
         /**
+         * Escape HTML to prevent XSS attacks
+         */
+        function escapeHtml(text) {
+            if (!text) return '';
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        /**
          * Format datetime to Indonesian format (24-hour format)
          * Format: DD/MM/YYYY, HH:mm:ss
          */
         function formatDateTime(dateString) {
             if (!dateString) return '-';
             
-            const date = new Date(dateString);
+            let date;
+            
+            // Handle different timestamp formats
+            if (typeof dateString === 'string') {
+                // If timestamp is in format "YYYY-MM-DD HH:mm:ss" (PostgreSQL format without timezone)
+                if (dateString.match(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}(\.\d+)?$/)) {
+                    // Parse as local time (assume server timezone is same as browser)
+                    const [datePart, timePart] = dateString.split(' ');
+                    const [year, month, day] = datePart.split('-').map(Number);
+                    const timeOnly = timePart.split('.')[0]; // Remove microseconds if present
+                    const [hours, minutes, seconds] = timeOnly.split(':').map(Number);
+                    date = new Date(year, month - 1, day, hours, minutes, seconds);
+                }
+                // If timestamp is in ISO format without timezone (e.g., "2026-01-05T05:13:06")
+                else if (dateString.match(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d+)?$/)) {
+                    // Parse as local time (no timezone conversion)
+                    const [datePart, timePart] = dateString.split('T');
+                    const [year, month, day] = datePart.split('-').map(Number);
+                    const timeOnly = timePart.split('.')[0]; // Remove microseconds if present
+                    const [hours, minutes, seconds] = timeOnly.split(':').map(Number);
+                    date = new Date(year, month - 1, day, hours, minutes, seconds);
+                }
+                // If timestamp has timezone info (e.g., "2026-01-05T05:13:06+07:00" or "2026-01-05T05:13:06Z")
+                else {
+                    // Let JavaScript handle timezone conversion
+                    date = new Date(dateString);
+                }
+            } else {
+                date = new Date(dateString);
+            }
             
             // Check if date is valid
-            if (isNaN(date.getTime())) return '-';
+            if (isNaN(date.getTime())) {
+                console.warn('Invalid date:', dateString);
+                return '-';
+            }
             
+            // Use local methods to display time (preserves server timezone if parsed correctly)
             // Format: DD/MM/YYYY, HH:mm:ss
             const day = String(date.getDate()).padStart(2, '0');
             const month = String(date.getMonth() + 1).padStart(2, '0');
@@ -2097,9 +2144,18 @@ placeholder="Masukkan nama user">
         function formatDate(dateString) {
             if (!dateString) return '-';
             
-            const date = new Date(dateString);
+            // Parse date string - handle both ISO format and other formats
+            let date = new Date(dateString);
+            
+            // If date string is in format "YYYY-MM-DD" (without time), parse manually
+            if (dateString.match(/^\d{4}-\d{2}-\d{2}$/)) {
+                const [year, month, day] = dateString.split('-').map(Number);
+                date = new Date(year, month - 1, day);
+            }
+            
             if (isNaN(date.getTime())) return '-';
             
+            // Use local methods to preserve server timezone
             const day = String(date.getDate()).padStart(2, '0');
             const month = String(date.getMonth() + 1).padStart(2, '0');
             const year = date.getFullYear();
@@ -2109,65 +2165,87 @@ placeholder="Masukkan nama user">
 
         async function loadAttendance(page = 1) {
             try {
-                const startDate = document.getElementById('attendance-start-date').value;
-                const endDate = document.getElementById('attendance-end-date').value;
+                const attendanceDate = document.getElementById('attendance-date').value;
                 
                 let url = `/api/attendance?page=${page}&per_page=20`;
-                if (startDate) url += `&start_date=${startDate}`;
-                if (endDate) url += `&end_date=${endDate}`;
+                if (attendanceDate) url += `&date=${attendanceDate}`;
                 
                 const response = await fetch(url);
+                
+                if (!response.ok) {
+                    throw new Error(`HTTP error! status: ${response.status}`);
+                }
+                
                 const data = await response.json();
                 
+                if (data.error) {
+                    throw new Error(data.error);
+                }
+                
                 const tbody = document.getElementById('attendance-table-body');
+                if (!tbody) {
+                    console.error('Attendance table body not found');
+                    return;
+                }
+                
                 tbody.innerHTML = '';
                 
-                if (data.attendance.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="10" class="text-center">No attendance records found</td></tr>';
+                if (!data.attendance || data.attendance.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="10" class="text-center">Tidak ada data attendance untuk tanggal yang dipilih</td></tr>';
                     return;
                 }
                 
                 data.attendance.forEach(record => {
-                    const row = document.createElement('tr');
-                    const clockIn = formatDateTime(record.clock_in);
-                    const clockOut = formatDateTime(record.clock_out);
-                    const hoursWorked = record.hours_worked ? record.hours_worked.toFixed(2) : '-';
-                    const fullName = record.full_name || record.username || 'Unknown';
-                    const userIdIn = record.user_id_in || (record.device_id_in ? record.user_id : '-');
-                    const userIdOut = record.user_id_out || (record.device_id_out ? record.user_id : '-');
-                    
-                    row.innerHTML = `
-                        <td>${formatDate(record.attendance_date)}</td>
-                        <td><strong>${fullName}</strong></td>
-                        <td>${userIdIn}</td>
-                        <td>${userIdOut}</td>
-                        <td>${clockIn}</td>
-                        <td>${clockOut}</td>
-                        <td>${hoursWorked}</td>
-                        <td>${record.total_granted || 0}</td>
-                        <td>${record.location_in_display || '-'}</td>
-                        <td>${record.location_out_display || '-'}</td>
-                    `;
-                    tbody.appendChild(row);
+                    try {
+                        const row = document.createElement('tr');
+                        const clockIn = formatDateTime(record.clock_in);
+                        const clockOut = formatDateTime(record.clock_out);
+                        const hoursWorked = record.hours_worked ? parseFloat(record.hours_worked).toFixed(2) : '-';
+                        const fullName = record.full_name || record.username || 'Unknown';
+                        const userIdIn = record.user_id_in || record.user_id || '-';
+                        const userIdOut = record.user_id_out || record.user_id || '-';
+                        
+                        row.innerHTML = `
+                            <td>${formatDate(record.attendance_date)}</td>
+                            <td><strong>${escapeHtml(fullName)}</strong></td>
+                            <td>${userIdIn}</td>
+                            <td>${userIdOut}</td>
+                            <td>${clockIn}</td>
+                            <td>${clockOut}</td>
+                            <td>${hoursWorked}</td>
+                            <td>${record.total_granted || 0}</td>
+                            <td>${escapeHtml(record.location_in_display || '-')}</td>
+                            <td>${escapeHtml(record.location_out_display || '-')}</td>
+                        `;
+                        tbody.appendChild(row);
+                    } catch (rowError) {
+                        console.error('Error processing attendance record:', rowError, record);
+                    }
                 });
                 
                 currentAttendancePage = page;
                 updatePagination('attendance-pagination', page, data.total_pages, loadAttendance);
             } catch (error) {
                 console.error('Error loading attendance:', error);
-                document.getElementById('attendance-table-body').innerHTML = 
-                    '<tr><td colspan="9" class="text-center text-danger">Error loading attendance</td></tr>';
+                const tbody = document.getElementById('attendance-table-body');
+                if (tbody) {
+                    tbody.innerHTML = 
+                        '<tr><td colspan="10" class="text-center text-danger">Error loading attendance: ' + escapeHtml(error.message || String(error)) + '</td></tr>';
+                }
             }
         }
 
         async function generateAttendanceReport() {
             try {
-                const startDate = document.getElementById('attendance-start-date').value;
-                const endDate = document.getElementById('attendance-end-date').value;
+                const attendanceDate = document.getElementById('attendance-date').value;
+                
+                if (!attendanceDate) {
+                    showNotification('Silakan pilih tanggal terlebih dahulu', 'warning');
+                    return;
+                }
                 
                 let url = '/api/attendance/report?';
-                if (startDate) url += `start_date=${startDate}&`;
-                if (endDate) url += `end_date=${endDate}`;
+                if (attendanceDate) url += `date=${attendanceDate}`;
                 
                 console.log('Fetching attendance report from:', url);
                 
@@ -2212,7 +2290,7 @@ placeholder="Masukkan nama user">
                 
                 // If no data, show message
                 if (data.attendance.length === 0) {
-                    showNotification('No attendance records found for the selected date range', 'info');
+                    showNotification('Tidak ada data attendance untuk tanggal yang dipilih', 'info');
                     return;
                 }
                 
@@ -2245,7 +2323,7 @@ placeholder="Masukkan nama user">
                 const url_blob = window.URL.createObjectURL(blob);
                 const a = document.createElement('a');
                 a.href = url_blob;
-                a.download = `attendance_report_${startDate || 'all'}_${endDate || 'all'}.csv`;
+                a.download = `attendance_report_${attendanceDate || 'all'}.csv`;
                 document.body.appendChild(a);
                 a.click();
                 document.body.removeChild(a);
@@ -2259,15 +2337,33 @@ placeholder="Masukkan nama user">
             }
         }
 
-        // Initialize attendance tab date inputs
+        async function generateAttendanceReportPDF() {
+            try {
+                const attendanceDate = document.getElementById('attendance-date').value;
+                
+                if (!attendanceDate) {
+                    showNotification('Silakan pilih tanggal terlebih dahulu', 'warning');
+                    return;
+                }
+                
+                // Create download URL
+                const url = `/api/attendance/report/pdf?date=${attendanceDate}`;
+                
+                // Open in new tab to download PDF
+                window.open(url, '_blank');
+                
+                showNotification('Mengunduh laporan PDF...', 'success');
+            } catch (error) {
+                console.error('Error generating PDF report:', error);
+                showNotification('Error generating PDF report: ' + (error.message || String(error)), 'error');
+            }
+        }
+
+        // Initialize attendance tab date input
         document.addEventListener('DOMContentLoaded', function() {
-            // Set default dates (current month)
+            // Set default date (today)
             const today = new Date();
-            const firstDay = new Date(today.getFullYear(), today.getMonth(), 1);
-            const lastDay = new Date(today.getFullYear(), today.getMonth() + 1, 0);
-            
-            document.getElementById('attendance-start-date').value = firstDay.toISOString().split('T')[0];
-            document.getElementById('attendance-end-date').value = lastDay.toISOString().split('T')[0];
+            document.getElementById('attendance-date').value = today.toISOString().split('T')[0];
             
             // Load attendance when tab is clicked
             const attendanceTab = document.getElementById('attendance-tab');

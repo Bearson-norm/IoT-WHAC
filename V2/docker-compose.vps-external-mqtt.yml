@@ -1,0 +1,209 @@
+version: '3.8'
+
+# Docker Compose for VPS Deployment with External MQTT Broker
+# Sistema WHAC Fingerprint - Web UI + Database
+# MQTT Broker: External (103.87.67.139:1883)
+
+services:
+  # PostgreSQL Database
+  postgres:
+    image: postgres:13-alpine
+    container_name: whac-postgres
+    restart: unless-stopped
+    
+    environment:
+      - POSTGRES_DB=${DB_NAME:-whac_master}
+      - POSTGRES_USER=${DB_USER:-postgres}
+      - POSTGRES_PASSWORD=${DB_PASSWORD:-Admin123}
+      - POSTGRES_INITDB_ARGS=--encoding=UTF-8
+    
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./web_ui/database_setup.sql:/docker-entrypoint-initdb.d/01-setup.sql:ro
+    
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-postgres} -d ${DB_NAME:-whac_master}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+      start_period: 30s
+    
+    networks:
+      - whac-network
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # Database Initialization Service
+  db-init:
+    build:
+      context: ./web_ui
+      dockerfile: Dockerfile.init
+    container_name: whac-db-init
+    restart: "no"
+    
+    environment:
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_NAME=${DB_NAME:-whac_master}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-Admin123}
+      - DB_PORT=${DB_PORT:-5432}
+    
+    volumes:
+      - ./web_ui/database_setup.sql:/app/database_setup.sql:ro
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+    
+    networks:
+      - whac-network
+
+  # Web UI Application
+  web-ui:
+    build:
+      context: ./web_ui
+      dockerfile: Dockerfile
+    container_name: whac-web-ui
+    restart: unless-stopped
+    
+    ports:
+      - "${WEB_PORT:-4545}:5000"  # Port 4545 for external access
+    
+    environment:
+      # Database Configuration
+      - DB_HOST=${DB_HOST:-postgres}
+      - DB_NAME=${DB_NAME:-whac_master}
+      - DB_USER=${DB_USER:-postgres}
+      - DB_PASSWORD=${DB_PASSWORD:-Admin123}
+      - DB_PORT=${DB_PORT:-5432}
+      
+      # MQTT Configuration (External Broker)
+      - MQTT_BROKER=${MQTT_BROKER:-103.87.67.139}
+      - MQTT_PORT=${MQTT_PORT:-1883}
+      - MQTT_ACTION_TOPIC=${MQTT_ACTION_TOPIC:-WHAC/Store001/action}
+      - MQTT_SCAN_TOPIC=${MQTT_SCAN_TOPIC:-WHAC/Store001/in}
+      - MQTT_AUDIO_TOPIC=${MQTT_AUDIO_TOPIC:-WHAC/Store001/audio}
+      - MQTT_AUDIO_RESPONSE_TOPIC=${MQTT_AUDIO_RESPONSE_TOPIC:-WHAC/Store001/audio_response}
+      - MQTT_GPIO_LOG_TOPIC=${MQTT_GPIO_LOG_TOPIC:-WHAC/Store001/gpio_log}
+      - MQTT_VOICE_COMMAND_TOPIC=${MQTT_VOICE_COMMAND_TOPIC:-WHAC/Store001/voice_command}
+      - MQTT_VOICE_RESPONSE_TOPIC=${MQTT_VOICE_RESPONSE_TOPIC:-WHAC/Store001/voice_response}
+      - MQTT_ALARM_TOPIC=${MQTT_ALARM_TOPIC:-WHAC/Store001/alarm}
+      
+      # Flask Configuration
+      - FLASK_APP=app.py
+      - FLASK_ENV=${FLASK_ENV:-production}
+      - SECRET_KEY=${SECRET_KEY:-whac_fingerprint_secret_key_change_in_production}
+      - PYTHONUNBUFFERED=1
+      - PYTHONIOENCODING=utf-8
+      
+      # Web UI Settings
+      - WEB_PORT=${WEB_PORT:-4545}
+    
+    volumes:
+      - ./web_ui/logs:/app/logs
+      - ./web_ui/static:/app/static:ro
+      - ./web_ui/templates:/app/templates:ro
+    
+    depends_on:
+      postgres:
+        condition: service_healthy
+      db-init:
+        condition: service_completed_successfully
+    
+    networks:
+      - whac-network
+    
+    # Health check
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; s=socket.socket(); s.settimeout(3); s.connect(('localhost', 5000)); s.close()"]
+      interval: 60s
+      timeout: 5s
+      retries: 3
+      start_period: 60s
+    
+    # Resource limits
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: '1.0'
+        reservations:
+          memory: 512M
+          cpus: '0.5'
+
+  # MQTT Data Processor (Optional - uncomment if needed)
+  # mqtt-processor:
+  #   build:
+  #     context: ./server
+  #     dockerfile: Dockerfile
+  #   container_name: whac-mqtt-processor
+  #   restart: unless-stopped
+  #   
+  #   environment:
+  #     # MQTT Configuration (External Broker)
+  #     - MQTT_BROKER=${MQTT_BROKER:-103.87.67.139}
+  #     - MQTT_PORT=${MQTT_PORT:-1883}
+  #     
+  #     # Database Configuration
+  #     - DB_HOST=${DB_HOST:-postgres}
+  #     - DB_NAME=${DB_NAME:-whac_master}
+  #     - DB_USER=${DB_USER:-postgres}
+  #     - DB_PASSWORD=${DB_PASSWORD:-Admin123}
+  #     - DB_PORT=${DB_PORT:-5432}
+  #     
+  #     # MQTT Topics
+  #     - SCAN_TOPIC=${SCAN_TOPIC:-WHAC/Store001/in}
+  #     - ACTION_TOPIC=${ACTION_TOPIC:-WHAC/Store001/action}
+  #     - STATUS_TOPIC=${STATUS_TOPIC:-WHAC/Store001/status}
+  #   
+  #   volumes:
+  #     - ./server/logs:/app/logs
+  #     - ./server/central_fingerprints.db:/app/central_fingerprints.db
+  #   
+  #   depends_on:
+  #     postgres:
+  #       condition: service_healthy
+  #   
+  #   networks:
+  #     - whac-network
+  #   
+  #   healthcheck:
+  #     test: ["CMD", "python3", "-c", "import paho.mqtt.client as mqtt; print('OK')"]
+  #     interval: 30s
+  #     timeout: 10s
+  #     retries: 3
+  #     start_period: 40s
+  #   
+  #   # Resource limits
+  #   deploy:
+  #     resources:
+  #       limits:
+  #         memory: 512M
+  #         cpus: '0.5'
+
+# Networks
+networks:
+  whac-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.25.0.0/16
+
+# Volumes for data persistence
+volumes:
+  postgres_data:
+    driver: local
+
+
+

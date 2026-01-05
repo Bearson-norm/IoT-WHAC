@@ -1,0 +1,68 @@
+# VPS Environment Configuration
+# Copy this file to vps.env and update with your values
+# DO NOT commit vps.env to Git!
+
+# ============================================
+# DATABASE CONFIGURATION
+# ============================================
+DB_HOST=postgres
+DB_NAME=whac_master
+DB_USER=postgres
+# IMPORTANT: Change this password in production!
+DB_PASSWORD=ChangeThisToAStrongPassword123!
+DB_PORT=5432
+
+# ============================================
+# MQTT BROKER CONFIGURATION
+# ============================================
+# Use 'mqtt-broker' for internal docker network
+# Or use VPS public IP if MQTT needs to be accessed externally
+MQTT_BROKER=mqtt-broker
+MQTT_PORT=1883
+
+# MQTT Topics
+MQTT_ACTION_TOPIC=WHAC/Store001/action
+MQTT_SCAN_TOPIC=WHAC/Store001/in
+MQTT_VOICE_COMMAND_TOPIC=WHAC/Store001/voice_command
+MQTT_VOICE_RESPONSE_TOPIC=WHAC/Store001/voice_response
+SCAN_TOPIC=WHAC/Store001/in
+ACTION_TOPIC=WHAC/Store001/action
+STATUS_TOPIC=WHAC/Store001/status
+
+# ============================================
+# WEB UI CONFIGURATION
+# ============================================
+# Port for Web UI (external access)
+WEB_PORT=4545
+
+# Flask Environment (production/development)
+FLASK_ENV=production
+
+# IMPORTANT: Change this to a long random string in production!
+# Generate with: openssl rand -hex 64
+SECRET_KEY=ChangeThisSecretKeyToALongRandomStringInProduction456!
+
+# ============================================
+# STORE/DEVICE CONFIGURATION
+# ============================================
+STORE_ID=Store001
+
+# ============================================
+# LOGGING
+# ============================================
+LOG_LEVEL=INFO
+
+# ============================================
+# NOTES FOR DEPLOYMENT
+# ============================================
+# 1. Copy this file: cp vps-env.example vps.env
+# 2. Edit vps.env and change:
+#    - DB_PASSWORD (use strong password)
+#    - SECRET_KEY (generate random string)
+# 3. Set secure permissions: chmod 600 vps.env
+# 4. Never commit vps.env to Git (add to .gitignore)
+#
+# Generate secure passwords:
+#   openssl rand -base64 32  # For DB_PASSWORD
+#   openssl rand -hex 64     # For SECRET_KEY
+

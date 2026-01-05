@@ -4,7 +4,7 @@ Web UI for WHAC Fingerprint System
 Displays fingerprint data from PostgreSQL database
 """
 
-from flask import Flask, render_template, jsonify, request, session, redirect, url_for, flash
+from flask import Flask, render_template, jsonify, request, session, redirect, url_for, flash, Response
 from flask_socketio import SocketIO, emit
 from functools import wraps
 import psycopg2
@@ -19,6 +19,13 @@ import bcrypt
 import secrets
 import hashlib
 import os
+from io import BytesIO
+from reportlab.lib import colors
+from reportlab.lib.pagesizes import A4, letter
+from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
+from reportlab.lib.units import inch
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, PageBreak
+from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
 from enrollment_manager import enrollment_manager
 
 # Configure logging
@@ -462,26 +469,41 @@ def handle_enrollment_response(payload):
                     # Determine which sensor table to use based on device_id
                     table_name = get_sensor_table_name(device_id)
                     
+                    # Get full_name from enrollment data or payload
+                    full_name = None
+                    posisi = ''
+                    if enrollment_id and active_enrollment:
+                        full_name = active_enrollment.get('full_name') or data.get('full_name')
+                        posisi = active_enrollment.get('posisi') or data.get('posisi', '')
+                    else:
+                        full_name = data.get('full_name')
+                        posisi = data.get('posisi', '')
+                    
+                    # Insert with full_name
                     cursor.execute(f"""
-                        INSERT INTO {table_name} (user_id, username, finger_template_id)
-                        VALUES (%s, %s, %s)
+                        INSERT INTO {table_name} (user_id, username, full_name, finger_template_id)
+                        VALUES (%s, %s, %s, %s)
                         ON CONFLICT (user_id) DO UPDATE SET
                             username = EXCLUDED.username,
+                            full_name = COALESCE(EXCLUDED.full_name, {table_name}.full_name),
                             finger_template_id = EXCLUDED.finger_template_id,
                             updated_at = CURRENT_TIMESTAMP
-                    """, (fingerprint_id, user_name, fingerprint_id))
+                    """, (fingerprint_id, user_name, full_name, fingerprint_id))
                     
                     logger.info(f"✅ User added to {table_name}: {user_name} (ID: {fingerprint_id})")
                     
-                    # Also add to user_machine table
+                    # Also add to user_machine table with posisi
                     cursor.execute("""
                         INSERT INTO user_machine (user_id, nama, device_id, posisi, finger_template_id)
                         VALUES (%s, %s, %s, %s, %s)
                         ON CONFLICT (user_id, device_id) DO UPDATE SET
                             nama = EXCLUDED.nama,
+                            posisi = COALESCE(EXCLUDED.posisi, user_machine.posisi),
                             finger_template_id = EXCLUDED.finger_template_id,
                             updated_at = CURRENT_TIMESTAMP
-                    """, (fingerprint_id, user_name, device_id, '', fingerprint_id))
+                    """, (fingerprint_id, user_name, device_id, posisi, fingerprint_id))
+                    
+                    logger.info(f"✅ User saved with full_name: {full_name} (ID: {fingerprint_id}, Device: {device_id})")
                     
                     conn.commit()
                     conn.close()
@@ -3407,6 +3429,10 @@ def enroll_user():
         
         logger.info(f"✅ MQTT client connected and ready")
         
+        # Get full_name and other data from request
+        full_name = data.get('full_name', '')
+        posisi = data.get('posisi', '')
+        
         # Start tracking enrollment
         target_sensor = data.get('target_sensor')  # Optional: specific sensor
         enrollment_data = enrollment_manager.start_enrollment(
@@ -3417,10 +3443,21 @@ def enroll_user():
         )
         enrollment_id = enrollment_data['enrollment_id']
         
+        # Store full_name in enrollment data for later use
+        if enrollment_id:
+            enrollment_manager.update_enrollment_status(
+                enrollment_id,
+                'pending',  # Keep current status
+                full_name=full_name,
+                posisi=posisi
+            )
+        
         # Prepare enrollment command
         enrollment_command = {
             'fingerprint_id': int(user_id),  # Ensure it's an integer
             'user_name': str(username),      # Ensure it's a string
+            'full_name': full_name,          # Include full_name for database
+            'posisi': posisi,                # Include posisi for database
             'timestamp': datetime.now().isoformat(),
             'source': 'web_ui',
             'requested_by': session.get('username', 'admin'),
@@ -3737,8 +3774,7 @@ def get_attendance():
     try:
         page = int(request.args.get('page', 1))
         per_page = int(request.args.get('per_page', 20))
-        start_date = request.args.get('start_date')
-        end_date = request.args.get('end_date')
+        attendance_date = request.args.get('date')
         offset = (page - 1) * per_page
         
         conn = get_db_connection()
@@ -3748,16 +3784,16 @@ def get_attendance():
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         # Build WHERE clause for date filtering
+        # IMPORTANT: Filter hanya berdasarkan attendance_date, bukan clock_in atau clock_out
+        # Ini memastikan setiap tanggal hanya menampilkan record dengan attendance_date yang sesuai
+        # Contoh: Jika filter tanggal 09/11/25, hanya record dengan attendance_date = 09/11/25 yang ditampilkan
+        # meskipun clock_in atau clock_out terjadi di tanggal yang berbeda
         where_clauses = []
         params = []
         
-        if start_date:
-            where_clauses.append("attendance_date >= %s")
-            params.append(start_date)
-        
-        if end_date:
-            where_clauses.append("attendance_date <= %s")
-            params.append(end_date)
+        if attendance_date:
+            where_clauses.append("attendance_date = %s")
+            params.append(attendance_date)
         
         where_sql = ""
         if where_clauses:
@@ -3795,16 +3831,27 @@ def get_attendance():
         conn.close()
         
         # Convert dates to ISO format for JSON serialization
+        # Format as string without timezone to preserve server local time
         attendance_list = []
         for row in attendance:
             record = dict(row)
-            # Convert date objects to strings
+            # Convert date objects to strings in format "YYYY-MM-DD HH:mm:ss"
+            # This format will be parsed as local time by JavaScript
+            def format_datetime_local(dt):
+                """Format datetime as local time string (no timezone conversion)"""
+                if dt is None:
+                    return None
+                if hasattr(dt, 'strftime'):
+                    # Format as "YYYY-MM-DD HH:mm:ss" (local time, no timezone)
+                    return dt.strftime('%Y-%m-%d %H:%M:%S')
+                return str(dt)
+            
             if record.get('attendance_date'):
-                record['attendance_date'] = record['attendance_date'].isoformat() if hasattr(record['attendance_date'], 'isoformat') else str(record['attendance_date'])
+                record['attendance_date'] = format_datetime_local(record.get('attendance_date'))
             if record.get('clock_in'):
-                record['clock_in'] = record['clock_in'].isoformat() if hasattr(record['clock_in'], 'isoformat') else str(record['clock_in'])
+                record['clock_in'] = format_datetime_local(record.get('clock_in'))
             if record.get('clock_out'):
-                record['clock_out'] = record['clock_out'].isoformat() if hasattr(record['clock_out'], 'isoformat') else str(record['clock_out'])
+                record['clock_out'] = format_datetime_local(record.get('clock_out'))
             attendance_list.append(record)
         
         return jsonify({
@@ -3824,8 +3871,10 @@ def get_attendance():
 def get_attendance_report():
     """Generate attendance report (CSV format)"""
     try:
-        start_date = request.args.get('start_date')
-        end_date = request.args.get('end_date')
+        attendance_date = request.args.get('date')
+        
+        if not attendance_date:
+            return jsonify({'error': 'Date parameter is required'}), 400
         
         conn = get_db_connection()
         if not conn:
@@ -3834,16 +3883,14 @@ def get_attendance_report():
         cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
         
         # Build WHERE clause for date filtering
+        # IMPORTANT: Filter hanya berdasarkan attendance_date, bukan clock_in atau clock_out
+        # Ini memastikan setiap tanggal hanya menampilkan record dengan attendance_date yang sesuai
         where_clauses = []
         params = []
         
-        if start_date:
-            where_clauses.append("attendance_date >= %s")
-            params.append(start_date)
-        
-        if end_date:
-            where_clauses.append("attendance_date <= %s")
-            params.append(end_date)
+        if attendance_date:
+            where_clauses.append("attendance_date = %s")
+            params.append(attendance_date)
         
         where_sql = ""
         if where_clauses:
@@ -3888,12 +3935,300 @@ def get_attendance_report():
         return jsonify({
             'attendance': attendance_list,
             'total': len(attendance_list),
-            'start_date': start_date,
-            'end_date': end_date
+            'date': attendance_date
         })
         
     except Exception as e:
         logger.error(f"Error generating attendance report: {e}", exc_info=True)
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/attendance/report/pdf')
+@login_required
+def get_attendance_report_pdf():
+    """Generate attendance report in PDF format"""
+    try:
+        attendance_date = request.args.get('date')
+        
+        if not attendance_date:
+            return jsonify({'error': 'Date parameter is required'}), 400
+        
+        conn = get_db_connection()
+        if not conn:
+            return jsonify({'error': 'Database connection failed'}), 500
+        
+        cursor = conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor)
+        
+        # Build WHERE clause for date filtering
+        where_clauses = []
+        params = []
+        
+        if attendance_date:
+            where_clauses.append("attendance_date = %s")
+            params.append(attendance_date)
+        
+        where_sql = ""
+        if where_clauses:
+            where_sql = "WHERE " + " AND ".join(where_clauses)
+        
+        # Get all attendance records
+        query = f"""
+            SELECT 
+                attendance_date,
+                user_id,
+                username,
+                full_name,
+                user_id_in,
+                user_id_out,
+                clock_in,
+                clock_out,
+                hours_worked,
+                total_granted,
+                location_in_display,
+                location_out_display
+            FROM attendance_summary 
+            {where_sql}
+            ORDER BY full_name, clock_in
+        """
+        cursor.execute(query, params)
+        attendance = cursor.fetchall()
+        conn.close()
+        
+        # Create PDF in memory
+        buffer = BytesIO()
+        doc = SimpleDocTemplate(buffer, pagesize=A4, 
+                                rightMargin=0.5*inch, leftMargin=0.5*inch,
+                                topMargin=0.5*inch, bottomMargin=0.5*inch)
+        
+        # Container for the 'Flowable' objects
+        elements = []
+        
+        # Define styles
+        styles = getSampleStyleSheet()
+        
+        # Custom styles
+        title_style = ParagraphStyle(
+            'CustomTitle',
+            parent=styles['Heading1'],
+            fontSize=18,
+            textColor=colors.HexColor('#1a1a1a'),
+            spaceAfter=6,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold'
+        )
+        
+        company_style = ParagraphStyle(
+            'CompanyStyle',
+            parent=styles['Heading2'],
+            fontSize=16,
+            textColor=colors.HexColor('#2c3e50'),
+            spaceAfter=4,
+            alignment=TA_CENTER,
+            fontName='Helvetica-Bold'
+        )
+        
+        location_style = ParagraphStyle(
+            'LocationStyle',
+            parent=styles['Normal'],
+            fontSize=12,
+            textColor=colors.HexColor('#7f8c8d'),
+            spaceAfter=20,
+            alignment=TA_CENTER,
+            fontName='Helvetica'
+        )
+        
+        date_style = ParagraphStyle(
+            'DateStyle',
+            parent=styles['Normal'],
+            fontSize=11,
+            textColor=colors.HexColor('#34495e'),
+            spaceAfter=20,
+            alignment=TA_CENTER,
+            fontName='Helvetica'
+        )
+        
+        # Header - Company Name
+        elements.append(Paragraph("PT FOOM LAB GLOBAL", company_style))
+        elements.append(Paragraph("Foomstore Tebet", location_style))
+        elements.append(Spacer(1, 0.2*inch))
+        
+        # Report Title
+        elements.append(Paragraph("LAPORAN ABSENSI KARYAWAN", title_style))
+        elements.append(Spacer(1, 0.1*inch))
+        
+        # Month names in Indonesian
+        month_names = {
+            1: 'Januari', 2: 'Februari', 3: 'Maret', 4: 'April',
+            5: 'Mei', 6: 'Juni', 7: 'Juli', 8: 'Agustus',
+            9: 'September', 10: 'Oktober', 11: 'November', 12: 'Desember'
+        }
+        
+        # Report Date - Format Indonesia
+        try:
+            date_obj = datetime.strptime(attendance_date, '%Y-%m-%d')
+            day = date_obj.day
+            month = month_names.get(date_obj.month, date_obj.strftime('%B'))
+            year = date_obj.year
+            formatted_date = f"{day} {month} {year}"
+        except:
+            formatted_date = attendance_date
+        elements.append(Paragraph(f"Tanggal: {formatted_date}", date_style))
+        elements.append(Spacer(1, 0.2*inch))
+        
+        if not attendance or len(attendance) == 0:
+            elements.append(Paragraph("Tidak ada data attendance untuk tanggal yang dipilih.", styles['Normal']))
+        else:
+            # Prepare table data
+            table_data = []
+            
+            # Table header
+            table_data.append([
+                'No',
+                'Nama Karyawan',
+                'User ID',
+                'Jam Masuk',
+                'Jam Keluar',
+                'Jam Kerja',
+                'Total Akses'
+            ])
+            
+            # Table rows
+            for idx, record in enumerate(attendance, 1):
+                full_name = record.get('full_name') or record.get('username') or '-'
+                user_id = record.get('user_id') or '-'
+                
+                # Format clock_in
+                clock_in = '-'
+                if record.get('clock_in'):
+                    try:
+                        if isinstance(record['clock_in'], str):
+                            dt = datetime.strptime(record['clock_in'], '%Y-%m-%d %H:%M:%S')
+                        else:
+                            dt = record['clock_in']
+                        clock_in = dt.strftime('%H:%M:%S')
+                    except:
+                        clock_in = str(record['clock_in'])[:8] if record['clock_in'] else '-'
+                
+                # Format clock_out
+                clock_out = '-'
+                if record.get('clock_out'):
+                    try:
+                        if isinstance(record['clock_out'], str):
+                            dt = datetime.strptime(record['clock_out'], '%Y-%m-%d %H:%M:%S')
+                        else:
+                            dt = record['clock_out']
+                        clock_out = dt.strftime('%H:%M:%S')
+                    except:
+                        clock_out = str(record['clock_out'])[:8] if record['clock_out'] else '-'
+                
+                # Format hours_worked
+                hours_worked = '-'
+                if record.get('hours_worked'):
+                    try:
+                        hours = float(record['hours_worked'])
+                        hours_worked = f"{hours:.2f} jam"
+                    except:
+                        hours_worked = '-'
+                
+                total_granted = record.get('total_granted') or 0
+                
+                table_data.append([
+                    str(idx),
+                    full_name,
+                    str(user_id),
+                    clock_in,
+                    clock_out,
+                    hours_worked,
+                    str(total_granted)
+                ])
+            
+            # Create table
+            table = Table(table_data, colWidths=[0.4*inch, 2.2*inch, 0.8*inch, 1*inch, 1*inch, 1*inch, 0.8*inch])
+            
+            # Table style
+            table.setStyle(TableStyle([
+                # Header row
+                ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#34495e')),
+                ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+                ('ALIGN', (0, 0), (-1, 0), 'CENTER'),
+                ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+                ('FONTSIZE', (0, 0), (-1, 0), 10),
+                ('BOTTOMPADDING', (0, 0), (-1, 0), 12),
+                ('TOPPADDING', (0, 0), (-1, 0), 12),
+                
+                # Data rows
+                ('BACKGROUND', (0, 1), (-1, -1), colors.beige),
+                ('TEXTCOLOR', (0, 1), (-1, -1), colors.black),
+                ('ALIGN', (0, 0), (0, -1), 'CENTER'),  # No column
+                ('ALIGN', (1, 1), (1, -1), 'LEFT'),  # Name column
+                ('ALIGN', (2, 1), (-1, -1), 'CENTER'),  # Other columns
+                ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+                ('FONTSIZE', (0, 1), (-1, -1), 9),
+                ('GRID', (0, 0), (-1, -1), 1, colors.black),
+                ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f8f9fa')]),
+            ]))
+            
+            elements.append(table)
+            elements.append(Spacer(1, 0.3*inch))
+            
+            # Summary
+            total_employees = len(attendance)
+            total_hours = sum([float(r.get('hours_worked', 0) or 0) for r in attendance if r.get('hours_worked')])
+            total_access = sum([int(r.get('total_granted', 0) or 0) for r in attendance])
+            
+            summary_style = ParagraphStyle(
+                'SummaryStyle',
+                parent=styles['Normal'],
+                fontSize=10,
+                textColor=colors.HexColor('#2c3e50'),
+                spaceAfter=5,
+                alignment=TA_LEFT,
+                fontName='Helvetica'
+            )
+            
+            elements.append(Paragraph(f"<b>Ringkasan:</b>", summary_style))
+            elements.append(Paragraph(f"Total Karyawan: {total_employees} orang", summary_style))
+            elements.append(Paragraph(f"Total Jam Kerja: {total_hours:.2f} jam", summary_style))
+            elements.append(Paragraph(f"Total Akses: {total_access} kali", summary_style))
+        
+        # Footer - Generated date
+        elements.append(Spacer(1, 0.3*inch))
+        footer_style = ParagraphStyle(
+            'FooterStyle',
+            parent=styles['Normal'],
+            fontSize=9,
+            textColor=colors.HexColor('#95a5a6'),
+            spaceAfter=0,
+            alignment=TA_CENTER,
+            fontName='Helvetica'
+        )
+        # Format generated date in Indonesian
+        now = datetime.now()
+        day = now.day
+        month = month_names.get(now.month, now.strftime('%B'))
+        year = now.year
+        time_str = now.strftime('%H:%M:%S')
+        generated_at = f"{day} {month} {year}, {time_str}"
+        # Use HTML tag for italic instead of font style
+        elements.append(Paragraph(f"<i>Dicetak pada: {generated_at}</i>", footer_style))
+        
+        # Build PDF
+        doc.build(elements)
+        
+        # Get PDF content
+        pdf_content = buffer.getvalue()
+        buffer.close()
+        
+        # Return PDF as response
+        response = Response(pdf_content, mimetype='application/pdf')
+        filename = f"attendance_report_{attendance_date}.pdf"
+        response.headers['Content-Disposition'] = f'inline; filename="{filename}"'
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Error generating PDF report: {e}", exc_info=True)
+        import traceback
+        logger.error(f"Traceback: {traceback.format_exc()}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
